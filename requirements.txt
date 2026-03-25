@@ -1,0 +1,6 @@
+playwright
+openai
+python-dotenv
+fastapi
+uvicorn
+anthropic

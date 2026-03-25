@@ -1,167 +1,120 @@
-import time
-from playwright.sync_api import sync_playwright
+import config
+from executor.browser import start_browser, wait_for_user_input, fill_field
+from executor.actions import get_visible, scroll_to_find, safe_click
+from extractor.dom import detect_iframes, log_page_elements
+from extractor.field_extractor import extract_fields
+from mapper.form_mapper import map_field
+from utils.logger import get_logger
+from utils.helpers import load_profile
 
-START_URL = "https://scholarships.gov.in/"
+logger = get_logger("main")
+
 
 def wait(msg):
     input(f"\n[MANUAL STEP] {msg} → Press Enter...")
 
-def get_visible(locator):
-    for i in range(locator.count()):
-        el = locator.nth(i)
-        try:
-            if el.is_visible():
-                return el
-        except:
-            continue
-    return None
-
 
 def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=200)
-        context = browser.new_context()
-        page = context.new_page()
+    # --- Launch browser using executor module ---
+    p, browser, context, page = start_browser()
 
-        print("Opening NSP...")
-        page.goto(START_URL)
+    try:
+        logger.info("Opening NSP...")
+        page.goto(config.START_URL)
+        page.wait_for_load_state("domcontentloaded")
+        logger.info(f"Page loaded — URL: {page.url}")
 
-        page.wait_for_timeout(4000)
-
-        print("URL:", page.url)
+        # --- Debug visibility: detect iframes and page elements ---
+        detect_iframes(page)
+        log_page_elements(page)
 
         # -----------------------------
         # STEP 1: STUDENTS (SAFE)
         # -----------------------------
         if "/Students" not in page.url:
-            print("Finding Students tile...")
+            logger.info("Finding Students tile...")
 
             students = get_visible(page.locator("text=Students"))
 
             if students:
-                students.scroll_into_view_if_needed()
-                page.wait_for_timeout(500)
-                students.click(force=True)
-                print("Clicked Students")
+                safe_click(page, students, label="Students tile")
             else:
                 wait("Click 'Students' manually")
         else:
-            print("Already in Students section")
+            logger.info("Already in Students section")
+
+        page.wait_for_timeout(3000)
+
+        # --- Re-check page after navigation ---
+        detect_iframes(page)
+        log_page_elements(page)
 
         # -----------------------------
         # STEP 2: REVEAL OTR (CRITICAL)
         # -----------------------------
-        print("Revealing OTR section...")
+        logger.info("Revealing OTR section...")
+        otr_element = scroll_to_find(page, "Get your OTR", max_attempts=10)
 
-        found = False
-
-        for _ in range(10):
-            try:
-                if page.locator("text=Get your OTR").count() > 0:
-                    print("OTR section found")
-                    found = True
-                    break
-            except:
-                pass
-
-            page.mouse.wheel(0, 800)
-            time.sleep(0.7)
-
-        if not found:
+        if not otr_element:
             wait("Scroll manually until OTR is visible")
 
         # -----------------------------
         # STEP 3: CLICK APPLY NOW
         # -----------------------------
-        print("Clicking Apply Now...")
-
-        apply_btn = None
-
-        for _ in range(8):
-            loc = page.locator("text=Apply now")
-
-            for i in range(loc.count()):
-                el = loc.nth(i)
-                try:
-                    if el.is_visible():
-                        apply_btn = el
-                        break
-                except:
-                    continue
-
-            if apply_btn:
-                break
-
-            page.mouse.wheel(0, 600)
-            time.sleep(0.5)
+        logger.info("Looking for Apply Now button...")
+        apply_btn = scroll_to_find(page, "Apply now", max_attempts=8)
 
         if apply_btn:
-            apply_btn.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            apply_btn.click(force=True)
-            print("Clicked Apply Now")
+            safe_click(page, apply_btn, label="Apply Now")
         else:
             wait("Click Apply Now manually")
 
         page.wait_for_timeout(4000)
-
-        print("Now at:", page.url)
+        logger.info(f"Now at: {page.url}")
 
         # -----------------------------
         # STEP 4: WAIT FOR FORM
         # -----------------------------
         try:
             page.wait_for_selector("input", timeout=15000)
-            print("Form detected")
-        except:
+            logger.info("Form detected")
+            log_page_elements(page)
+        except Exception:
             wait("Ensure form is visible")
 
         # -----------------------------
         # STEP 5: OTP / CAPTCHA
         # -----------------------------
-        wait("Solve OTP / CAPTCHA")
+        wait_for_user_input("Solve OTP / CAPTCHA if required")
 
         # -----------------------------
-        # STEP 6: BASIC FILL
+        # STEP 6: FORM FILL (MODULAR)
         # -----------------------------
-        print("Filling fields...")
+        logger.info("Extracting form fields...")
+        profile = load_profile(config.PROFILE_PATH)
 
-        profile = {
-            "email": "rahultest123@gmail.com",
-            "password": "Test@1234",
-            "phone": "9876543210"
-        }
+        fields = extract_fields(page)
 
-        inputs = page.locator("input")
+        filled_count = 0
+        for field_info in fields:
+            key, value = map_field(field_info, profile)
+            if key and value:
+                fill_field(page, field_info, value)
+                filled_count += 1
 
-        for i in range(inputs.count()):
-            inp = inputs.nth(i)
-
-            try:
-                name = (inp.get_attribute("name") or "").lower()
-                placeholder = (inp.get_attribute("placeholder") or "").lower()
-
-                field = name + " " + placeholder
-
-                if "email" in field:
-                    inp.fill(profile["email"])
-                    print("Filled email")
-
-                elif "password" in field:
-                    inp.fill(profile["password"])
-                    print("Filled password")
-
-                elif "mobile" in field or "phone" in field:
-                    inp.fill(profile["phone"])
-                    print("Filled phone")
-
-            except:
-                continue
+        logger.info(f"Filled {filled_count} / {len(fields)} fields from profile")
 
         wait("Check fields and submit manually")
 
-        print("\nDONE. Your bot finally behaves like it understands NSP.")
-        time.sleep(100000)
+        logger.info("Phase 1 flow complete.")
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    finally:
+        input("\nPress Enter to close browser...")
+        browser.close()
+        p.stop()
+        logger.info("Browser closed. Done.")
 
 
 if __name__ == "__main__":

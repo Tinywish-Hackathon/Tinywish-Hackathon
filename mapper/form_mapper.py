@@ -13,9 +13,7 @@ def map_field(field_info, profile):
         return "marksheet", config.MARKSHEET_PATH
 
     # Text mapping
-    if "name" in label and "full" in label:
-        return "full_name", profile.get("full_name")
-    elif "name" in label:
+    if "name" in label:
         return "full_name", profile.get("full_name")
         
     if "email" in label:
