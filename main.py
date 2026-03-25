@@ -1,6 +1,6 @@
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
-from executor.actions import get_visible, scroll_to_find, safe_click
+from executor.actions import get_visible, scroll_to_find, safe_click, find_by_text_fuzzy, safe_click_fuzzy
 from extractor.dom import detect_iframes, log_page_elements
 from extractor.field_extractor import extract_fields
 from mapper.form_mapper import map_field
@@ -34,10 +34,10 @@ def main():
         if "/Students" not in page.url:
             logger.info("Finding Students tile...")
 
-            students = get_visible(page.locator("text=Students"))
+            students, matched = find_by_text_fuzzy(page, ["students", "student corner", "student login"])
 
             if students:
-                safe_click(page, students, label="Students tile")
+                safe_click(page, students, label=f"Students tile (matched: '{matched}')")
             else:
                 wait("Click 'Students' manually")
         else:
@@ -53,21 +53,29 @@ def main():
         # STEP 2: REVEAL OTR (CRITICAL)
         # -----------------------------
         logger.info("Revealing OTR section...")
-        otr_element = scroll_to_find(page, "Get your OTR", max_attempts=10)
+        otr_clicked = safe_click_fuzzy(
+            page,
+            ["otr", "one time registration", "register", "get your otr", "new registration"],
+            label="OTR section",
+            max_scroll=12
+        )
 
-        if not otr_element:
-            wait("Scroll manually until OTR is visible")
+        if not otr_clicked:
+            wait("Click OTR / Registration manually")
 
         # -----------------------------
         # STEP 3: CLICK APPLY NOW
         # -----------------------------
-        logger.info("Looking for Apply Now button...")
-        apply_btn = scroll_to_find(page, "Apply now", max_attempts=8)
+        logger.info("Looking for Apply / Login button...")
+        apply_clicked = safe_click_fuzzy(
+            page,
+            ["apply now", "apply for scholarship", "apply", "login", "sign in", "proceed"],
+            label="Apply/Login",
+            max_scroll=10
+        )
 
-        if apply_btn:
-            safe_click(page, apply_btn, label="Apply Now")
-        else:
-            wait("Click Apply Now manually")
+        if not apply_clicked:
+            wait("Click Apply / Login manually")
 
         page.wait_for_timeout(4000)
         logger.info(f"Now at: {page.url}")
