@@ -1,0 +1,12 @@
+{
+  "full_name": "Rahul Sharma",
+  "email": "rahul@email.com",
+  "phone": "9876543210",
+  "dob": "2003-05-12",
+  "category": "OBC",
+  "income": "250000",
+  "documents": {
+    "aadhaar": "docs/aadhaar.pdf",
+    "marksheet": "docs/marksheet.pdf"
+  }
+}
