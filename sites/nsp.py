@@ -26,15 +26,25 @@ FLOW = [
         "max_scroll": 12,
     },
     {
-        "action": "click",
-        "section": ["apply for scholarship", "scholarship", "apply"],
-        "target": ["login", "sign in", "apply now", "proceed"],
-        "label": "Apply / Login",
+        "action": "click_fuzzy",
+        "candidates": ["apply now", "apply for scholarship", "apply"],
+        "label": "Apply for Scholarship",
         "max_scroll": 10,
+    },
+    {
+        "action": "click_fuzzy",
+        "candidates": ["login", "sign in", "proceed"],
+        "label": "Login / Sign In",
+        "max_scroll": 6,
     },
     {
         "action": "wait",
         "message": "Solve OTP / CAPTCHA if required",
         "label": "Manual: OTP/CAPTCHA",
+    },
+    {
+        "action": "fill_form",
+        "label": "Auto-fill form fields",
+        "wait_after": 1000,
     },
 ]

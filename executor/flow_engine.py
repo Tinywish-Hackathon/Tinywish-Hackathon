@@ -1,10 +1,18 @@
 from executor.actions import (
-    safe_click_in_section, safe_click_fuzzy, find_by_text_fuzzy, safe_click
+    safe_click_in_section, safe_click_fuzzy, find_by_text_fuzzy, safe_click,
+    fill_form as execute_fill_form
 )
 from extractor.dom import detect_iframes, log_page_elements
+from extractor.field_extractor import extract_input_fields
+from mapper.field_mapper import map_profile_to_fields
+from utils.helpers import load_and_validate_profile
 from utils.logger import get_logger
+import config
 
 logger = get_logger("flow_engine")
+
+# Cache profile across flow steps
+_cached_profile = None
 
 
 def run_flow(page, flow_steps):
@@ -81,6 +89,39 @@ def run_flow(page, flow_steps):
                 logger.warning(f"PAUSED: {message}")
                 input(f"\n[MANUAL STEP] {message} → Press Enter...")
                 success = True
+
+            elif action == "fill_form":
+                global _cached_profile
+
+                # 1. Extract fields
+                logger.info("Extracting form fields...")
+                fields = extract_input_fields(page)
+
+                if not fields:
+                    logger.warning("No form fields found on page")
+                else:
+                    # 2. Load profile (cached)
+                    if _cached_profile is None:
+                        profile_path = step.get("profile_path", config.PROFILE_PATH)
+                        logger.info("Loading and validating profile...")
+                        _cached_profile = load_and_validate_profile(profile_path)
+
+                    # 3. Map fields
+                    logger.info("Mapping profile to form fields...")
+                    mapped = map_profile_to_fields(_cached_profile, fields)
+
+                    if not mapped:
+                        logger.warning("No fields could be mapped to profile")
+                    else:
+                        # 4. Fill form
+                        logger.info("Filling form...")
+                        fill_result = execute_fill_form(page, mapped)
+                        logger.info(
+                            f"Fill result: {fill_result['filled']} filled, "
+                            f"{fill_result['skipped']} skipped, "
+                            f"{fill_result['failed']} failed"
+                        )
+                        success = fill_result["filled"] > 0
 
             else:
                 logger.warning(f"Unknown action '{action}' in step {step_num}")
