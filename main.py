@@ -1,11 +1,16 @@
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
-from executor.actions import get_visible, scroll_to_find, safe_click, find_by_text_fuzzy, safe_click_fuzzy
+from executor.actions import (
+    get_visible, scroll_to_find, safe_click,
+    find_by_text_fuzzy, safe_click_fuzzy, safe_click_in_section
+)
+from executor.flow_engine import run_flow
 from extractor.dom import detect_iframes, log_page_elements
 from extractor.field_extractor import extract_fields
 from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
+from sites.nsp import FLOW as NSP_FLOW
 
 logger = get_logger("main")
 
@@ -24,64 +29,19 @@ def main():
         page.wait_for_load_state("domcontentloaded")
         logger.info(f"Page loaded — URL: {page.url}")
 
-        # --- Debug visibility: detect iframes and page elements ---
-        detect_iframes(page)
-        log_page_elements(page)
+        # --- Run the site-specific navigation flow ---
+        results = run_flow(page, NSP_FLOW)
+        logger.info(f"Navigation flow: {results['completed']}/{results['total']} steps completed")
 
-        # -----------------------------
-        # STEP 1: STUDENTS (SAFE)
-        # -----------------------------
-        if "/Students" not in page.url:
-            logger.info("Finding Students tile...")
-
-            students, matched = find_by_text_fuzzy(page, ["students", "student corner", "student login"])
-
-            if students:
-                safe_click(page, students, label=f"Students tile (matched: '{matched}')")
-            else:
-                wait("Click 'Students' manually")
-        else:
-            logger.info("Already in Students section")
+        # If any navigation steps failed, offer manual fallback
+        if results["failed"] > 0:
+            wait(f"{results['failed']} step(s) failed — verify page state manually")
 
         page.wait_for_timeout(3000)
-
-        # --- Re-check page after navigation ---
-        detect_iframes(page)
-        log_page_elements(page)
-
-        # -----------------------------
-        # STEP 2: REVEAL OTR (CRITICAL)
-        # -----------------------------
-        logger.info("Revealing OTR section...")
-        otr_clicked = safe_click_fuzzy(
-            page,
-            ["otr", "one time registration", "register", "get your otr", "new registration"],
-            label="OTR section",
-            max_scroll=12
-        )
-
-        if not otr_clicked:
-            wait("Click OTR / Registration manually")
-
-        # -----------------------------
-        # STEP 3: CLICK APPLY NOW
-        # -----------------------------
-        logger.info("Looking for Apply / Login button...")
-        apply_clicked = safe_click_fuzzy(
-            page,
-            ["apply now", "apply for scholarship", "apply", "login", "sign in", "proceed"],
-            label="Apply/Login",
-            max_scroll=10
-        )
-
-        if not apply_clicked:
-            wait("Click Apply / Login manually")
-
-        page.wait_for_timeout(4000)
         logger.info(f"Now at: {page.url}")
 
         # -----------------------------
-        # STEP 4: WAIT FOR FORM
+        # WAIT FOR FORM
         # -----------------------------
         try:
             page.wait_for_selector("input", timeout=15000)
@@ -89,11 +49,6 @@ def main():
             log_page_elements(page)
         except Exception:
             wait("Ensure form is visible")
-
-        # -----------------------------
-        # STEP 5: OTP / CAPTCHA
-        # -----------------------------
-        wait_for_user_input("Solve OTP / CAPTCHA if required")
 
         # -----------------------------
         # STEP 6: FORM FILL (MODULAR)

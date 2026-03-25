@@ -154,3 +154,169 @@ def safe_click_fuzzy(page, candidates, label="element", max_scroll=10):
 
     logger.warning(f"Could not find '{label}' with any candidate")
     return False
+
+
+def find_section_by_text(page, candidates):
+    """Find a container element (div, section, article, li) whose text matches a candidate.
+
+    Searches for sections containing the candidate text and returns the
+    nearest meaningful container, not just inline text nodes.
+
+    Args:
+        page: Playwright page object.
+        candidates: List of text strings to match inside containers.
+
+    Returns:
+        Tuple of (section_locator, matched_candidate) or (None, None).
+    """
+    container_tags = ["section", "article", "div.card", "div.tile", "li", "div"]
+
+    for candidate in candidates:
+        search = candidate.lower()
+
+        for tag in container_tags:
+            try:
+                # Find containers that have text containing the candidate
+                selector = f"{tag}:has(text='{search}')"
+                loc = page.locator(selector)
+
+                if loc.count() > 0:
+                    # Prefer the most specific (smallest) visible match
+                    for i in range(loc.count()):
+                        section = loc.nth(i)
+                        try:
+                            if section.is_visible():
+                                logger.info(
+                                    f"Section found: '{candidate}' in <{tag}> "
+                                    f"(match {i + 1}/{loc.count()})"
+                                )
+                                return section, candidate
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+    logger.debug(f"No section found for candidates {candidates}")
+    return None, None
+
+
+def find_within_section(section, candidates):
+    """Search for a clickable element ONLY inside the given section.
+
+    Args:
+        section: A Playwright locator scoped to a container element.
+        candidates: List of text strings to match within the section.
+
+    Returns:
+        Tuple of (element, matched_candidate) or (None, None).
+    """
+    for candidate in candidates:
+        search = candidate.lower()
+
+        # Strategy 1: Links and buttons with matching text
+        for role_sel in ["a", "button", "[role='button']", "[role='link']"]:
+            try:
+                loc = section.locator(f"{role_sel}:has-text('{search}')")
+                if loc.count() > 0:
+                    el = get_visible(loc)
+                    if el:
+                        logger.info(f"Scoped match: '{candidate}' via {role_sel} inside section")
+                        return el, candidate
+            except Exception:
+                pass
+
+        # Strategy 2: Any element with that text inside the section
+        try:
+            loc = section.locator(f"text={search}")
+            if loc.count() > 0:
+                el = get_visible(loc)
+                if el:
+                    logger.info(f"Scoped match: '{candidate}' via text inside section")
+                    return el, candidate
+        except Exception:
+            pass
+
+    logger.debug(f"No scoped match inside section for candidates {candidates}")
+    return None, None
+
+
+def safe_click_in_section(page, section_candidates, target_candidates,
+                          label="element", max_scroll=10):
+    """Find a section by text, then click a target element within it.
+
+    Two-phase search:
+        1. Scroll to find a container matching section_candidates
+        2. Inside that container, find and click an element matching target_candidates
+
+    Falls back to safe_click_fuzzy if the section is found but
+    no specific target is found inside it (clicks the section match directly).
+
+    Args:
+        page: Playwright page object.
+        section_candidates: Text candidates to identify the section/card.
+        target_candidates: Text candidates for the clickable element inside the section.
+        label: Human-readable label for logging.
+        max_scroll: Maximum scroll attempts.
+
+    Returns:
+        True if clicked, False if not found.
+    """
+    logger.info(
+        f"Context search for '{label}': "
+        f"section={section_candidates}, target={target_candidates}"
+    )
+
+    # Phase 1: Scroll to find the section
+    section = None
+    section_match = None
+
+    for attempt in range(max_scroll):
+        section, section_match = find_section_by_text(page, section_candidates)
+        if section:
+            logger.info(f"Section '{section_match}' found after {attempt + 1} scroll(s)")
+            break
+
+        page.mouse.wheel(0, 400)
+        page.wait_for_timeout(800)
+
+    if not section:
+        logger.warning(f"Section not found for '{label}', falling back to fuzzy click")
+        # Fallback: try direct fuzzy click with all candidates combined
+        combined = section_candidates + target_candidates
+        return safe_click_fuzzy(page, combined, label=label, max_scroll=3)
+
+    # Phase 2: Find the target inside the section
+    section.scroll_into_view_if_needed()
+    page.wait_for_timeout(500)
+
+    target, target_match = find_within_section(section, target_candidates)
+
+    if target:
+        try:
+            target.scroll_into_view_if_needed()
+            page.wait_for_timeout(300)
+            target.click()
+            logger.info(
+                f"Clicked '{label}': target='{target_match}' inside section='{section_match}'"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Found target '{target_match}' but click failed: {e}")
+            return False
+
+    # Fallback: click the section-level match itself (it might be the link)
+    logger.info(f"No specific target inside section, attempting section-level click")
+    el, matched = find_within_section(section, section_candidates)
+    if el:
+        try:
+            el.scroll_into_view_if_needed()
+            page.wait_for_timeout(300)
+            el.click()
+            logger.info(f"Clicked section-level element '{matched}' for '{label}'")
+            return True
+        except Exception as e:
+            logger.error(f"Section-level click failed: {e}")
+
+    logger.warning(f"Could not click any target for '{label}'")
+    return False
+
