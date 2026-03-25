@@ -2,6 +2,9 @@
 
 URL = "https://scholarships.gov.in/"
 
+# Intent tells the agent what to prioritize scanning for
+INTENT = "apply"
+
 FLOW = [
     {
         "action": "detect",

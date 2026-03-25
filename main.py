@@ -10,7 +10,7 @@ from extractor.field_extractor import extract_fields
 from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
-from sites.nsp import FLOW as NSP_FLOW
+from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
 
 logger = get_logger("main")
 
@@ -30,8 +30,8 @@ def main():
         logger.info(f"Page loaded — URL: {page.url}")
 
         # --- Run the site-specific navigation flow ---
-        results = run_flow(page, NSP_FLOW)
-        logger.info(f"Navigation flow: {results['completed']}/{results['total']} steps completed")
+        results = run_flow(page, NSP_FLOW, flow_intent=NSP_INTENT)
+        logger.info(f"Navigation flow: {results['completed']}/{results['total']} steps completed, {results.get('skipped', 0)} skipped")
 
         # If any navigation steps failed, offer manual fallback
         if results["failed"] > 0:
