@@ -354,6 +354,75 @@ def _navigate_to_schemes(page):
     return False
 
 
+def navigate_to_schemes(page):
+    """Public wrapper for fallback navigation."""
+    return _navigate_to_schemes(page)
+
+
+def extract_schemes(page):
+    """Extract all schemes from the current NSP schemes page."""
+    all_schemes = []
+
+    try:
+        page.wait_for_selector("table tbody tr", timeout=10000)
+        logger.info("[DISCOVERY] Table data loaded")
+    except Exception:
+        logger.warning("[DISCOVERY] Table rows not found after timeout")
+
+    _set_max_entries(page)
+    page.wait_for_timeout(2000)
+
+    try:
+        page.wait_for_selector("table tbody tr", timeout=10000)
+    except Exception:
+        pass
+
+    page_num = 0
+    while page_num < _MAX_PAGES:
+        page_num += 1
+        logger.info(f"[DISCOVERY] Extracting page {page_num}...")
+
+        page_schemes = _extract_schemes_from_page(page)
+        logger.info(
+            f"[DISCOVERY] Extracted {len(page_schemes)} schemes "
+            f"from page {page_num}"
+        )
+
+        if page_schemes:
+            all_schemes.extend(page_schemes)
+
+        try:
+            next_btn = page.locator("li.paginate_button.next")
+            if next_btn.count() == 0:
+                logger.info("[DISCOVERY] No pagination found")
+                break
+
+            classes = (next_btn.first.get_attribute("class") or "").lower()
+            if "disabled" in classes:
+                logger.info("[DISCOVERY] No more pages (Next is disabled)")
+                break
+
+            next_link = next_btn.first.locator("a")
+            if next_link.count() > 0:
+                next_link.first.click()
+            else:
+                next_btn.first.click()
+
+            page.wait_for_timeout(1500)
+            try:
+                page.wait_for_selector("table tbody tr", timeout=10000)
+            except Exception:
+                logger.warning("[DISCOVERY] Table did not reload after pagination")
+                break
+
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Pagination error: {e}")
+            break
+
+    all_schemes = _deduplicate(all_schemes)
+    logger.info(f"[DISCOVERY] Total schemes collected: {len(all_schemes)}")
+    return all_schemes
+
 
 def _scrape_schemes_playwright():
     """Scrape schemes using Playwright with intent-safe navigation."""
@@ -368,72 +437,15 @@ def _scrape_schemes_playwright():
             page = context.new_page()
             page.set_default_timeout(30000)
 
-            # Smart navigation from homepage
-            if not _navigate_to_schemes(page):
+            page.goto(_HOMEPAGE_URL)
+
+            if not navigate_to_schemes(page):
+                print("[ERROR] Navigation failed")
                 logger.error("[DISCOVERY] Failed to reach schemes page")
                 browser.close()
                 return []
 
-            # Wait for table data rows
-            try:
-                page.wait_for_selector("table tbody tr", timeout=10000)
-                logger.info("[DISCOVERY] Table data loaded")
-            except Exception:
-                logger.warning("[DISCOVERY] Table rows not found after timeout")
-
-            # Expand entries to maximum
-            _set_max_entries(page)
-
-            # Wait for table to re-render
-            page.wait_for_timeout(2000)
-            try:
-                page.wait_for_selector("table tbody tr", timeout=10000)
-            except Exception:
-                pass
-
-            # Extract with pagination
-            page_num = 0
-            while page_num < _MAX_PAGES:
-                page_num += 1
-                logger.info(f"[DISCOVERY] Extracting page {page_num}...")
-
-                page_schemes = _extract_schemes_from_page(page)
-                logger.info(
-                    f"[DISCOVERY] Extracted {len(page_schemes)} schemes "
-                    f"from page {page_num}"
-                )
-
-                if page_schemes:
-                    all_schemes.extend(page_schemes)
-
-                # Check for Next button (DataTables pagination)
-                try:
-                    next_btn = page.locator("li.paginate_button.next")
-                    if next_btn.count() == 0:
-                        logger.info("[DISCOVERY] No pagination found")
-                        break
-
-                    classes = (next_btn.first.get_attribute("class") or "").lower()
-                    if "disabled" in classes:
-                        logger.info("[DISCOVERY] No more pages (Next is disabled)")
-                        break
-
-                    next_link = next_btn.first.locator("a")
-                    if next_link.count() > 0:
-                        next_link.first.click()
-                    else:
-                        next_btn.first.click()
-
-                    page.wait_for_timeout(1500)
-                    try:
-                        page.wait_for_selector("table tbody tr", timeout=10000)
-                    except Exception:
-                        logger.warning("[DISCOVERY] Table did not reload after pagination")
-                        break
-
-                except Exception as e:
-                    logger.debug(f"[DISCOVERY] Pagination error: {e}")
-                    break
+            all_schemes = extract_schemes(page)
 
             browser.close()
 
@@ -441,9 +453,6 @@ def _scrape_schemes_playwright():
         logger.error(f"[DISCOVERY] Playwright scrape failed: {e}")
         if all_schemes:
             logger.info(f"[DISCOVERY] Returning {len(all_schemes)} partial results")
-
-    all_schemes = _deduplicate(all_schemes)
-    logger.info(f"[DISCOVERY] Total schemes collected: {len(all_schemes)}")
 
     return all_schemes
 
@@ -456,9 +465,9 @@ def get_nsp_schemes(use_cache=True):
     """Get NSP scheme list using layered strategy.
 
     Strategy order:
-      1. Cache (if available and not force-refreshing)
-      2. TinyFish AI agent (primary)
-      3. Playwright browser (fallback)
+      1. TinyFish AI agent (primary)
+      2. Playwright browser (fallback)
+      3. Cache (last-resort safety net)
 
     Args:
         use_cache: If True, load from cache file if it exists.
@@ -468,22 +477,23 @@ def get_nsp_schemes(use_cache=True):
     """
     global _FORCE_REFRESH
 
-    # Layer 1: Cache
-    if use_cache and not _FORCE_REFRESH:
+    logger.info("[DISCOVERY] Starting fresh scheme extraction...")
+
+    # Layer 1: TinyFish (primary)
+    schemes = try_tinyfish()
+
+    # Layer 2: Playwright (fallback)
+    if not schemes:
+        print("[DISCOVERY] Falling back to Playwright...")
+        logger.info("[DISCOVERY] Falling back to Playwright...")
+        schemes = _scrape_schemes_playwright()
+
+    # Layer 3: Cache safety net
+    if not schemes and use_cache and not _FORCE_REFRESH:
         cached = _load_cache()
         if cached:
             logger.info(f"[DISCOVERY] Loaded {len(cached)} schemes from cache")
-            return cached
-
-    logger.info("[DISCOVERY] Starting fresh scheme extraction...")
-
-    # Layer 2: TinyFish (primary)
-    schemes = try_tinyfish()
-
-    # Layer 3: Playwright (fallback)
-    if not schemes:
-        logger.info("[DISCOVERY] Falling back to Playwright browser...")
-        schemes = _scrape_schemes_playwright()
+            schemes = cached
 
     # Save to cache
     if schemes:
