@@ -35,19 +35,13 @@ FLOW = [
         "max_scroll": 10,
     },
     {
-        "action": "click_fuzzy",
-        "candidates": ["login", "sign in", "proceed"],
-        "label": "Login / Sign In",
-        "max_scroll": 6,
-    },
-    {
-        "action": "wait",
-        "message": "Solve OTP / CAPTCHA if required",
-        "label": "Manual: OTP/CAPTCHA",
+        "action": "login_check",
+        "label": "Auto-handle login form (Aadhaar + OTP + CAPTCHA)",
+        "wait_after": 2000,
     },
     {
         "action": "fill_form",
-        "label": "Auto-fill form fields",
+        "label": "Auto-fill remaining form fields",
         "wait_after": 1000,
     },
 ]

@@ -2,18 +2,20 @@ from executor.actions import (
     safe_click_in_section, safe_click_fuzzy, find_by_text_fuzzy, safe_click,
     fill_form as execute_fill_form, reset_click_history
 )
+from executor.form_handler import handle_login_form
 from executor.intent import global_intent_scan, should_skip_step
 from extractor.dom import detect_iframes, log_page_elements
 from extractor.field_extractor import extract_input_fields
 from mapper.field_mapper import map_profile_to_fields
-from utils.helpers import load_and_validate_profile
+from utils.helpers import load_and_validate_profile, load_profile
 from utils.logger import get_logger
 import config
 
 logger = get_logger("flow_engine")
 
-# Cache profile across flow steps
+# Cache profile and state across flow steps
 _cached_profile = None
+_flow_state = {}
 
 
 def run_flow(page, flow_steps, flow_intent="apply"):
@@ -41,13 +43,24 @@ def run_flow(page, flow_steps, flow_intent="apply"):
     Returns:
         Dict with results: {"completed": int, "failed": int, "skipped": int, "total": int}
     """
+    global _cached_profile, _flow_state
+
     completed = 0
     failed = 0
     skipped = 0
     total = len(flow_steps)
 
-    # Reset click history for fresh flow
+    # Reset click history and state for fresh flow
     reset_click_history()
+    _flow_state = {}
+
+    # Load profile once for the entire flow
+    if _cached_profile is None:
+        try:
+            _cached_profile = load_profile(config.PROFILE_PATH)
+        except Exception as e:
+            logger.warning(f"Could not load profile: {e}")
+            _cached_profile = {}
 
     logger.info(f"Starting flow with {total} step(s), intent='{flow_intent}'")
 
@@ -60,6 +73,9 @@ def run_flow(page, flow_steps, flow_intent="apply"):
             f"matched '{intent_result['matched_text']}' (priority={intent_result['priority']})"
         )
         page.wait_for_timeout(3000)  # Let the page settle after direct action
+
+        # Check if intent action landed on a login page
+        handle_login_form(page, _cached_profile, _flow_state)
 
     for i, step in enumerate(flow_steps):
         step_num = i + 1
@@ -93,6 +109,9 @@ def run_flow(page, flow_steps, flow_intent="apply"):
                 )
                 completed += 1
                 page.wait_for_timeout(2000)
+
+                # Check if mid-flow action landed on a login page
+                handle_login_form(page, _cached_profile, _flow_state)
                 continue
 
         success = False
@@ -136,8 +155,6 @@ def run_flow(page, flow_steps, flow_intent="apply"):
                 success = True
 
             elif action == "fill_form":
-                global _cached_profile
-
                 logger.info("Extracting form fields...")
                 fields = extract_input_fields(page)
 
@@ -164,6 +181,10 @@ def run_flow(page, flow_steps, flow_intent="apply"):
                         )
                         success = fill_result["filled"] > 0
 
+            elif action == "login_check":
+                login_result = handle_login_form(page, _cached_profile, _flow_state)
+                success = login_result is not None
+
             else:
                 logger.warning(f"Unknown action '{action}' in step {step_num}")
 
@@ -173,6 +194,10 @@ def run_flow(page, flow_steps, flow_intent="apply"):
         if success:
             completed += 1
             logger.info(f"Step {step_num}/{total} completed")
+
+            # After successful navigation, check for login forms
+            if action in ("click", "click_fuzzy"):
+                handle_login_form(page, _cached_profile, _flow_state)
         else:
             failed += 1
             logger.warning(f"Step {step_num}/{total} failed")
