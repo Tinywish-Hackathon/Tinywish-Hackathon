@@ -10,6 +10,8 @@ All navigation is intent-safe: discovery mode blocks login/apply/OTR clicks.
 
 import json
 import os
+
+from core.integrations.tinyfish_client import get_tinyfish_client
 from utils.logger import get_logger
 
 logger = get_logger("nsp_scraper")
@@ -66,47 +68,52 @@ def _save_cache(schemes):
 # STRATEGY 1: TINYFISH (PRIMARY)
 # ─────────────────────────────────────────────────
 
-def _try_tinyfish():
+def try_tinyfish():
     """Use TinyFish AI web agent to extract schemes.
 
     Returns list of scheme dicts, or None if TinyFish is not available
     or fails.
     """
     try:
-        import tinyfish
+        from tinyfish import TinyFish  # noqa: F401
     except ImportError:
         logger.info("[DISCOVERY] TinyFish not installed — skipping AI strategy")
         return None
 
-    logger.info("[DISCOVERY] Using TinyFish AI agent...")
+    try:
+        client = get_tinyfish_client()
+    except ValueError as e:
+        logger.warning(f"[DISCOVERY] TinyFish unavailable: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[DISCOVERY] TinyFish client init failed: {e}")
+        return None
+
+    print("[DISCOVERY] Using TinyFish...")
+    logger.info("[DISCOVERY] Using TinyFish...")
 
     try:
-        result = tinyfish.run(
+        result = client.run(
             goal="""
-            You are a web agent.
+            Go to https://scholarships.gov.in
 
-            Objective: find all scholarship schemes listed on the National
-            Scholarship Portal.
-
-            Start at https://scholarships.gov.in
-
-            DO NOT click login, apply, OTR, or register.
+            Do NOT click login, apply, or OTR.
 
             Navigate like a user:
-            - Find student-related section
-            - Find schemes listing
-            - Open schemes page
+            - Click 'Students'
+            - Click 'Schemes on NSP'
+            - Open schemes list
 
             Extract:
             - scheme name
             - eligibility (if visible)
 
-            Return JSON list of objects with keys: "name", "eligibility"
+            Return JSON list
             """,
             max_steps=40,
         )
 
-        if hasattr(result, "data") and result.data:
+        if result and hasattr(result, "data") and result.data:
             schemes = result.data
             # Normalize structure
             if isinstance(schemes, list):
@@ -118,15 +125,23 @@ def _try_tinyfish():
                             "eligibility": str(s.get("eligibility", "")).strip(),
                         })
                 if normalized:
+                    print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
                     logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
                     return normalized
 
+        print("[DISCOVERY] TinyFish failed -> fallback")
         logger.warning("[DISCOVERY] TinyFish returned no usable data")
         return None
 
     except Exception as e:
         logger.error(f"[DISCOVERY] TinyFish failed: {e}")
+        print("[DISCOVERY] TinyFish failed -> fallback")
         return None
+
+
+def _try_tinyfish():
+    """Backward-compatible wrapper for TinyFish discovery."""
+    return try_tinyfish()
 
 
 # ─────────────────────────────────────────────────
@@ -449,7 +464,7 @@ def get_nsp_schemes(use_cache=True):
     logger.info("[DISCOVERY] Starting fresh scheme extraction...")
 
     # Layer 2: TinyFish (primary)
-    schemes = _try_tinyfish()
+    schemes = try_tinyfish()
 
     # Layer 3: Playwright (fallback)
     if not schemes:

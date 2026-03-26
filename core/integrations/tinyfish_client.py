@@ -1,7 +1,12 @@
 import os
+
 from tinyfish import TinyFish
-from config import Config
+
 
 def get_tinyfish_client():
-    return TinyFish(api_key=Config.TINYFISH_API_KEY)
+    api_key = os.getenv("TINYFISH_API_KEY")
 
+    if not api_key:
+        raise ValueError("Missing TINYFISH_API_KEY")
+
+    return TinyFish(api_key=api_key)
