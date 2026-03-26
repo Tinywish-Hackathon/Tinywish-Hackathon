@@ -252,93 +252,107 @@ def _deduplicate(schemes):
     return list(unique.values())
 
 
-def _navigate_to_schemes(page):
-    """Navigate from homepage to the schemes page using smart fuzzy clicks.
+def safe_click_fuzzy(page, candidates, blocklist=None):
+    """Click the first visible, safe link/button matching any candidate text."""
+    blocklist = blocklist or ["login", "apply", "otr", "register", "sign in"]
 
-    Tries multiple candidate link texts in priority order. Ensures we
-    are on the homepage first. Returns True if a table is found.
-    """
-    logger.info("[DISCOVERY] Navigating via homepage to schemes page")
-
-    # Step 1: ensure we are on homepage
-    if "scholarships.gov.in" not in page.url:
-        page.goto(_HOMEPAGE_URL)
-    else:
-        page.goto(_HOMEPAGE_URL)
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
-
-    # Step 2: scan page for best navigation candidate (fuzzy, NOT hardcoded)
-    clicked = False
-    for candidate in _SCHEME_NAV_CANDIDATES:
-        # Strategy A: role-based locator
-        try:
-            link = page.get_by_role("link", name=candidate)
-            if link.count() > 0 and link.first.is_visible():
-                link_text = link.first.inner_text().strip().lower()
-                # Intent filter: skip login/apply/otr links
-                blocked = ["apply", "login", "otr", "register", "sign in"]
-                if any(b in link_text for b in blocked):
-                    logger.info(f"[DISCOVERY] Skipping blocked link: '{link_text[:40]}'")
-                    continue
-                logger.info(f"[DISCOVERY] Clicking link: '{candidate}'")
-                link.first.click()
-                clicked = True
-                break
-        except Exception:
-            pass
-
-        # Strategy B: text-based locator
-        try:
-            loc = page.locator(f"a:has-text('{candidate}')")
-            if loc.count() > 0 and loc.first.is_visible():
-                loc_text = loc.first.inner_text().strip().lower()
-                blocked = ["apply", "login", "otr", "register", "sign in"]
-                if any(b in loc_text for b in blocked):
-                    logger.info(f"[DISCOVERY] Skipping blocked link: '{loc_text[:40]}'")
-                    continue
-                logger.info(f"[DISCOVERY] Clicking link (text match): '{candidate}'")
-                loc.first.click()
-                clicked = True
-                break
-        except Exception:
+    for candidate in candidates:
+        candidate_text = candidate.strip().lower()
+        if not candidate_text or any(blocked in candidate_text for blocked in blocklist):
             continue
 
-    if not clicked:
-        # Last resort: any link containing "scheme" (still intent-filtered)
-        try:
-            fallback = page.locator("a:has-text('scheme')")
-            if fallback.count() > 0:
-                for i in range(fallback.count()):
-                    el = fallback.nth(i)
-                    if el.is_visible():
-                        el_text = el.inner_text().strip().lower()
-                        blocked = ["apply", "login", "otr", "register"]
-                        if any(b in el_text for b in blocked):
-                            continue
-                        logger.info(f"[DISCOVERY] Clicking fallback: '{el_text[:40]}'")
-                        el.click()
-                        clicked = True
-                        break
-        except Exception:
-            pass
+        locators = [
+            page.get_by_role("link", name=candidate, exact=False),
+            page.get_by_role("button", name=candidate, exact=False),
+            page.locator(f"a:has-text('{candidate}')"),
+            page.locator(f"button:has-text('{candidate}')"),
+            page.locator(f"text=/{candidate}/i"),
+        ]
 
-    if not clicked:
-        logger.error("[DISCOVERY] Could not find schemes navigation link")
-        return False
+        for locator in locators:
+            try:
+                count = locator.count()
+            except Exception:
+                continue
 
-    # Wait for schemes page to load
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+            for index in range(count):
+                try:
+                    element = locator.nth(index)
+                    if not element.is_visible():
+                        continue
 
-    # Verify table is present
-    if page.locator("table").count() > 0:
-        logger.info(f"[DISCOVERY] Schemes page loaded — URL: {page.url}")
-        return True
+                    text = (element.inner_text() or "").strip().lower()
+                    if any(blocked in text for blocked in blocklist):
+                        logger.info(f"[NAV] Skipping blocked element: '{text[:40]}'")
+                        continue
 
-    logger.error("[DISCOVERY] No table found after navigation")
+                    element.click()
+                    return True
+                except Exception:
+                    continue
+
     return False
+
+
+def _navigate_to_schemes(page):
+    """Navigate from homepage to the schemes page using iterative safe clicks."""
+    target = ["schemes", "all scholarships"]
+    block = ["login", "apply", "otr", "register", "sign in"]
+    actions = ["schemes on nsp", "schemes", "students"]
+
+    logger.info("[DISCOVERY] Navigating via homepage to schemes page")
+    page.goto(_HOMEPAGE_URL)
+
+    for step in range(5):
+        print(f"[NAV] Step {step + 1}: {page.url}")
+        logger.info(f"[NAV] Step {step + 1}: {page.url}")
+
+        try:
+            page.wait_for_load_state("networkidle")
+        except Exception:
+            logger.debug("[NAV] networkidle wait timed out; continuing")
+        page.wait_for_timeout(1500)
+
+        url = page.url.lower()
+        try:
+            text = page.inner_text("body").lower()
+        except Exception:
+            text = ""
+
+        if "all-scholarships" in url or ("schemes" in url and page.locator("table").count() > 0):
+            print("[NAV] Reached schemes page")
+            logger.info(f"[NAV] Reached schemes page: {page.url}")
+            return True
+
+        if any(token in url or token in text for token in target):
+            try:
+                if page.locator("table").count() > 0:
+                    print("[NAV] Reached schemes page")
+                    logger.info(f"[NAV] Reached schemes page: {page.url}")
+                    return True
+            except Exception:
+                pass
+
+        clicked = False
+        for action in actions:
+            if any(blocked in action for blocked in block):
+                continue
+
+            if safe_click_fuzzy(page, [action], block):
+                print(f"[NAV] Clicked: {action}")
+                logger.info(f"[NAV] Clicked: {action}")
+                clicked = True
+                break
+
+        if not clicked:
+            print("[NAV] No valid action found")
+            logger.error("[NAV] No valid action found")
+            return False
+
+    print("[NAV] Max steps reached")
+    logger.error("[NAV] Max steps reached")
+    return False
+
 
 
 def _scrape_schemes_playwright():
