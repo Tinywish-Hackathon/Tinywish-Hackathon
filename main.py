@@ -1,3 +1,5 @@
+import sys
+import argparse
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
 from executor.actions import (
@@ -11,12 +13,68 @@ from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
 from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
+from config import Config
+
+if not Config.TINYFISH_API_KEY:
+    raise ValueError("Missing TINYFISH_API_KEY in .env file")
+
+print("[CONFIG] TinyFish key loaded:", bool(Config.TINYFISH_API_KEY))
 
 logger = get_logger("main")
 
 
+
 def wait(msg):
     input(f"\n[MANUAL STEP] {msg} → Press Enter...")
+
+
+def run_discovery():
+    """Run scheme discovery mode: scrape → match → rank → display."""
+    from core.discovery.nsp_scraper import get_nsp_schemes
+    from core.discovery.eligibility import find_eligible_schemes
+    from core.discovery.ranking import rank_schemes, format_ranked_output
+
+    profile = load_profile(config.PROFILE_PATH)
+
+    logger.info("[DISCOVERY] Starting scheme discovery...")
+    schemes = get_nsp_schemes(use_cache=True)
+
+    if not schemes:
+        print("Could not load schemes. Run with --no-cache to retry scrape.")
+        return
+
+    eligible = find_eligible_schemes(profile, schemes)
+
+    if not eligible:
+        print("No eligible schemes found for your profile.")
+        print("Tip: Check state/category spelling in profile.json")
+        return
+
+    ranked = rank_schemes(profile, eligible)
+    print(format_ranked_output(ranked))
+
+    # Selection loop
+    while True:
+        try:
+            choice = input("\nSelect scheme number to apply (0 to exit): ").strip()
+            n = int(choice)
+            if n == 0:
+                print("Exiting.")
+                return
+            if 1 <= n <= len(ranked):
+                selected = ranked[n - 1]
+                print(f"\nSelected: {selected['name']}")
+                print("Handing off to application agent...")
+                # TODO: pass selected["name"] into flow engine
+                # main_flow(selected_scheme=selected["name"])
+                return
+            else:
+                print(f"Please enter a number between 1 and {len(ranked)}")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return
 
 
 def main():
@@ -81,4 +139,26 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Tinywish Automation Agent")
+    parser.add_argument("--discover", action="store_true",
+                        help="Run scheme discovery mode")
+    parser.add_argument("--apply", action="store_true",
+                        help="Run application/login mode (default)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Force fresh scrape (use with --discover)")
+    args = parser.parse_args()
+
+    # Set global intent mode
+    from core.intent_filter import set_mode
+    if args.discover:
+        set_mode("discover")
+    else:
+        set_mode("apply")
+
+    if args.discover:
+        if args.no_cache:
+            from core.discovery import nsp_scraper
+            nsp_scraper._FORCE_REFRESH = True
+        run_discovery()
+    else:
+        main()

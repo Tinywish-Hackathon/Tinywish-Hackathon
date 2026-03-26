@@ -1,10 +1,12 @@
 {
-  "full_name": "Rahul Sharma",
-  "email": "rahul@email.com",
-  "phone": "9876543210",
-  "dob": "2003-05-12",
-  "category": "OBC",
-  "income": "250000",
+  "full_name": "Atharv Jandial",
+  "email": "[EMAIL_ADDRESS]",
+  "phone": "6005378585",
+  "dob": "2007-12-20",
+  "category": "obc",
+  "state": "Jammu and Kashmir",
+  "annual_income": 250000,
+  "course_level": "undergraduate",
   "documents": {
     "aadhaar": "docs/aadhaar.pdf",
     "marksheet": "docs/marksheet.pdf"

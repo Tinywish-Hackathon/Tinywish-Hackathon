@@ -288,6 +288,7 @@ def safe_click_fuzzy(page, candidates, label="element", max_scroll=10):
     """Scroll to find a CLICKABLE element by fuzzy text match, then click it.
 
     Only clicks elements that are genuinely interactive (a, button, role=button).
+    Respects the global intent filter (blocks login/apply clicks in discovery mode).
     """
     logger.info(f"Searching for '{label}' with candidates: {candidates}")
 
@@ -299,6 +300,14 @@ def safe_click_fuzzy(page, candidates, label="element", max_scroll=10):
         el, matched = result, candidates[0] if result else None
 
     if el and matched:
+        # Intent filter: block unsafe clicks based on current mode
+        try:
+            from core.intent_filter import should_block_click
+            if should_block_click(matched):
+                return False
+        except ImportError:
+            pass
+
         # Validate clickability before clicking
         if not _is_clickable(el):
             info = _get_element_info(el)
