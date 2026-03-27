@@ -209,8 +209,10 @@ Return JSON:
 ]
 """
 
+    print(dir(client.agent))
+
     attempts = [
-        ("client.agent.run", lambda: client.agent.run(goal=prompt)),
+        ("client.agent.run", lambda: client.agent.run(url="https://scholarships.gov.in", goal=str(prompt))),
         ("client.agent", lambda: client.agent(prompt=prompt)),
         ("client.run", lambda: client.run(prompt=prompt)),
     ]
@@ -220,7 +222,12 @@ Return JSON:
         try:
             logger.info(f"[DISCOVERY] TinyFish attempting {label}")
             response = attempt()
-            normalized = parse_tinyfish_result(response)
+            payload = response
+            if hasattr(response, "data") and response.data:
+                payload = response.data
+            elif hasattr(response, "output") and response.output:
+                payload = response.output
+            normalized = parse_tinyfish_result(payload)
             if normalized:
                 logger.info("[DISCOVERY] TinyFish success")
                 return normalized
@@ -289,157 +296,146 @@ def _set_max_entries(page):
 
 
 def _extract_schemes_accordion(page):
-    """Extract scheme data from accordion-based ministry sections."""
+    """Extract schemes using the NSP filter workflow instead of accordion clicks."""
     schemes = []
     seen = set()
-    max_sections = 30
 
-    def _text(locator):
-        try:
-            return (locator.inner_text() or "").strip()
-        except Exception:
-            return ""
+    def _clean_text(value):
+        return " ".join(str(value).split()).strip()
 
-    def _add_scheme(name, ministry_name):
-        cleaned = " ".join(str(name).split()).strip(" -:\n\t")
+    def _add_scheme(name):
+        cleaned = _clean_text(name)
         if len(cleaned) < 4:
-            return
-
-        lowered = cleaned.lower()
-        blocked = ("ministry", "department", "council", "board", "commission")
-        if lowered in blocked:
-            return
-
-        if cleaned.lower() in seen:
-            return
-
-        seen.add(cleaned.lower())
+            return False
+        key = cleaned.lower()
+        if key in seen:
+            return False
+        seen.add(key)
         schemes.append({
             "name": cleaned,
-            "eligibility": f"Scheme under {ministry_name}",
+            "eligibility": "Extracted from NSP filters",
         })
+        return True
 
-    section_entries = []
-    try:
-        accordion_items = page.locator(".accordion-item")
-        count = min(accordion_items.count(), max_sections)
-        for index in range(count):
-            try:
-                item = accordion_items.nth(index)
-                if item.is_visible():
-                    section_entries.append(("item", index, item))
-            except Exception:
-                continue
-    except Exception as e:
-        logger.debug(f"[DISCOVERY] Accordion item scan failed: {e}")
-
-    if not section_entries:
+    def _wait_for_results():
         try:
-            toggles = page.locator("[data-bs-toggle='collapse']")
-            count = min(toggles.count(), max_sections)
-            for index in range(count):
-                section_entries.append(("toggle", index, toggles.nth(index)))
+            page.wait_for_load_state("networkidle")
+        except Exception:
+            logger.debug("[DISCOVERY] networkidle wait timed out after search")
+        page.wait_for_timeout(2000)
+        try:
+            page.wait_for_selector("text=Scheme", timeout=10000)
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Collapse toggle scan failed: {e}")
+            logger.debug(f"[DISCOVERY] Scheme text wait timed out: {e}")
 
-    if not section_entries:
+    def _extract_cards():
+        extracted = 0
         try:
-            text_headers = page.locator("text=/(Ministry|Department|Council|Board|Commission)/i")
-            count = min(text_headers.count(), max_sections)
-            for index in range(count):
-                section_entries.append(("text", index, text_headers.nth(index)))
+            cards = page.locator("div:has-text('Scheme Open from')")
+            card_count = cards.count()
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Text header scan failed: {e}")
+            logger.debug(f"[DISCOVERY] Card lookup failed: {e}")
+            return 0
 
-    logger.info(f"[DISCOVERY] Accordion sections found: {len(section_entries)}")
-
-    for entry_type, index, base_locator in section_entries[:max_sections]:
-        ministry_name = ""
-        header = None
-        section_root = base_locator
-
-        try:
-            if entry_type == "item":
-                section_root = base_locator
-                header_candidates = [
-                    section_root.locator("[data-bs-toggle='collapse']").first,
-                    section_root.locator(".accordion-button").first,
-                    section_root.get_by_role("button").first,
-                    section_root.locator("text=/(Ministry|Department|Council|Board|Commission)/i").first,
-                ]
-                for candidate in header_candidates:
-                    try:
-                        if candidate.count() > 0 and candidate.is_visible():
-                            header = candidate
-                            break
-                    except Exception:
-                        continue
-            else:
-                header = base_locator
-                try:
-                    section_root = base_locator.locator("xpath=ancestor::*[contains(@class,'accordion-item')][1]").first
-                except Exception:
-                    section_root = base_locator
-
-            if header is None:
-                continue
-
-            ministry_name = _text(header)
-            if not ministry_name:
-                ministry_name = f"Section {index + 1}"
-
-            expanded_before = False
+        for index in range(card_count):
             try:
-                expanded_before = (header.get_attribute("aria-expanded") or "").lower() == "true"
-            except Exception:
-                expanded_before = False
-
-            try:
-                header.click(timeout=3000, force=False)
-                page.wait_for_timeout(800)
-            except Exception as e:
-                logger.debug(f"[DISCOVERY] Accordion click failed for {ministry_name}: {e}")
-                continue
-
-            scheme_locators = [
-                section_root.locator("a[href*='scheme']"),
-                section_root.locator(".scheme-name"),
-                section_root.locator(".collapse.show li"),
-            ]
-
-            section_count = 0
-            for scheme_locator in scheme_locators:
-                try:
-                    count = scheme_locator.count()
-                except Exception:
+                card = cards.nth(index)
+                card_text = _clean_text(card.inner_text())
+                if not card_text:
                     continue
-
-                for scheme_index in range(count):
-                    try:
-                        scheme_name = _text(scheme_locator.nth(scheme_index))
-                        before = len(schemes)
-                        _add_scheme(scheme_name, ministry_name)
-                        if len(schemes) > before:
-                            section_count += 1
-                    except Exception:
+                lines = [line.strip() for line in card_text.splitlines() if line.strip()]
+                name = ""
+                for line in lines:
+                    lowered = line.lower()
+                    if "scheme open from" in lowered:
                         continue
+                    if len(line) > 10:
+                        name = line
+                        break
+                if not name:
+                    name = lines[0] if lines else ""
+                if _add_scheme(name):
+                    extracted += 1
+            except Exception:
+                continue
+        return extracted
 
-            logger.info(
-                f"[DISCOVERY] Extracted {section_count} schemes from accordion: {ministry_name}"
-            )
+    try:
+        page.goto("https://scholarships.gov.in/All-Scholarships", wait_until="networkidle")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Filter workflow navigation failed: {e}")
+        return []
 
-            if not expanded_before:
-                try:
-                    header.click(timeout=2000, force=False)
-                    page.wait_for_timeout(500)
-                except Exception:
-                    pass
+    selects = page.locator("select")
+    try:
+        if selects.count() < 3:
+            logger.error("[DISCOVERY] Expected NSP filter selects were not found")
+            return []
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Failed to access filter selects: {e}")
+        return []
 
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {index + 1}: {e}")
+    scheme_type_select = selects.nth(0)
+    ministry_select = selects.nth(1)
+    state_select = selects.nth(2)
+
+    try:
+        scheme_type_select.select_option(label="Central Sector Schemes")
+        page.wait_for_timeout(1000)
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Could not select scheme type: {e}")
+
+    try:
+        state_select.select_option(label="UT of Jammu and Kashmir")
+        page.wait_for_timeout(1000)
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Could not select state filter: {e}")
+
+    try:
+        options = ministry_select.locator("option")
+        option_count = options.count()
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Could not read ministry options: {e}")
+        return []
+
+    processed_ministries = 0
+    for option_index in range(option_count):
+        try:
+            option = options.nth(option_index)
+            option_label = _clean_text(option.inner_text())
+            option_value = option.get_attribute("value") or ""
+        except Exception:
             continue
 
-    logger.info(f"[DISCOVERY] Accordion schemes extracted: {len(schemes)}")
+        if not option_value or not option_label:
+            continue
+        if option_label.lower() in {"select", "select ministry", "all"}:
+            continue
+
+        try:
+            ministry_select.select_option(value=option_value)
+            page.wait_for_timeout(1000)
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Ministry select failed for {option_label}: {e}")
+            continue
+
+        try:
+            page.get_by_role("button", name="Search").click()
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Search click failed for {option_label}: {e}")
+            continue
+
+        _wait_for_results()
+        extracted = _extract_cards()
+        processed_ministries += 1
+        logger.info(f"[DISCOVERY] Extracted {extracted} schemes for ministry {option_label}")
+
+    schemes = _deduplicate(schemes)
+    logger.info(
+        f"[DISCOVERY] Filter workflow processed {processed_ministries} ministries and extracted {len(schemes)} schemes"
+    )
     return schemes
 
 
