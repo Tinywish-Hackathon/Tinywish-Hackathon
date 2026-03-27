@@ -296,26 +296,52 @@ def _set_max_entries(page):
 
 
 def _extract_schemes_accordion(page):
-    """Extract schemes by expanding dynamic accordion sections safely."""
+    """Extract scheme names from expanded NSP accordion sections."""
     schemes = []
     seen = set()
 
     def _clean_text(value):
         return " ".join(str(value).split()).strip()
 
-    def _add_scheme(name, section_name):
+    def _add_scheme(name, source_label):
         cleaned = _clean_text(name)
         if len(cleaned) <= 10:
             return False
-        key = cleaned.lower()
-        if key in seen:
+        lowered = cleaned.lower()
+        if lowered in seen:
             return False
-        seen.add(key)
+        if lowered.startswith("scheme open from") or lowered.startswith("click here"):
+            return False
+        seen.add(lowered)
         schemes.append({
             "name": cleaned,
-            "eligibility": f"Scheme under {section_name}",
+            "eligibility": f"Extracted from {source_label}",
         })
         return True
+
+    def _extract_title(content):
+        selectors = ("strong", "h4", "h5", "a", "li", "span")
+        for selector in selectors:
+            try:
+                items = content.locator(selector)
+                count = items.count()
+            except Exception:
+                continue
+
+            for index in range(count):
+                try:
+                    text = _clean_text(items.nth(index).inner_text())
+                    if len(text) > 10:
+                        return text
+                except Exception:
+                    continue
+        return ""
+
+    try:
+        selected = page.locator("select").nth(0).locator("option:checked").first.inner_text()
+        source_label = _clean_text(selected) or "NSP accordion"
+    except Exception:
+        source_label = "NSP accordion"
 
     headers = page.locator('[data-bs-toggle="collapse"]')
     try:
@@ -326,13 +352,13 @@ def _extract_schemes_accordion(page):
 
     logger.info(f"[DISCOVERY] Accordion sections found: {header_count}")
 
-    for index in range(header_count):
+    for header_index in range(header_count):
         try:
             headers = page.locator('[data-bs-toggle="collapse"]')
-            if index >= headers.count():
+            if header_index >= headers.count():
                 break
 
-            header = headers.nth(index)
+            header = headers.nth(header_index)
             try:
                 header.scroll_into_view_if_needed()
                 page.wait_for_timeout(300)
@@ -341,51 +367,47 @@ def _extract_schemes_accordion(page):
 
             try:
                 if not header.is_visible():
-                    logger.debug(f"[DISCOVERY] Accordion header {index + 1} is not visible")
                     continue
             except Exception:
                 continue
 
-            section_name = _clean_text(header.inner_text()) or f"Section {index + 1}"
             target = header.get_attribute("data-bs-target")
             if not target:
-                logger.debug(f"[DISCOVERY] Missing data-bs-target for {section_name}")
                 continue
 
             try:
                 header.click(force=True)
                 page.wait_for_timeout(1500)
             except Exception as e:
-                logger.debug(f"[DISCOVERY] Accordion click failed for {section_name}: {e}")
+                logger.debug(f"[DISCOVERY] Accordion click failed at index {header_index}: {e}")
                 continue
 
             content = page.locator(target)
             try:
                 content.wait_for(state="visible", timeout=5000)
             except Exception as e:
-                logger.debug(f"[DISCOVERY] Accordion content did not expand for {section_name}: {e}")
+                logger.debug(f"[DISCOVERY] Accordion content wait failed for {target}: {e}")
                 continue
 
-            scheme_elements = content.locator("li, a, span, strong, h4, h5")
-            try:
-                scheme_count = scheme_elements.count()
-            except Exception as e:
-                logger.debug(f"[DISCOVERY] Failed to enumerate schemes for {section_name}: {e}")
-                scheme_count = 0
+            title = _extract_title(content)
+            if title:
+                _add_scheme(title, source_label)
 
-            extracted = 0
-            for scheme_index in range(scheme_count):
+            try:
+                nested = content.locator("li, a, span, strong, h4, h5")
+                nested_count = nested.count()
+            except Exception:
+                nested_count = 0
+
+            for nested_index in range(nested_count):
                 try:
-                    text = _clean_text(scheme_elements.nth(scheme_index).inner_text())
-                    if _add_scheme(text, section_name):
-                        extracted += 1
+                    text = _clean_text(nested.nth(nested_index).inner_text())
+                    _add_scheme(text, source_label)
                 except Exception:
                     continue
 
-            logger.info(f"[DISCOVERY] Extracted {extracted} schemes from {section_name}")
-
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {index + 1}: {e}")
+            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {header_index + 1}: {e}")
             continue
 
     schemes = _deduplicate(schemes)
@@ -496,18 +518,125 @@ def navigate_to_schemes(page):
 
 
 def extract_schemes(page):
-    """Extract all schemes from the current NSP schemes page."""
+    """Run the full NSP filter + accordion extraction pipeline."""
+
+    def _click_search(form):
+        last_error = None
+        for _ in range(2):
+            try:
+                button = form.get_by_role("button", name="Search")
+                if button.count() > 0:
+                    button.first.click()
+                    return
+            except Exception as e:
+                last_error = e
+            try:
+                form.locator('button[type="submit"]').first.click()
+                return
+            except Exception as e:
+                last_error = e
+            page.wait_for_timeout(500)
+        raise last_error or RuntimeError("Search button not clickable")
+
+    def _wait_for_results():
+        try:
+            page.wait_for_load_state("networkidle")
+        except Exception:
+            logger.debug("[DISCOVERY] networkidle wait timed out after search")
+        page.wait_for_timeout(2000)
+        try:
+            page.locator('[data-bs-toggle="collapse"]').first.wait_for(state="visible", timeout=10000)
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Accordion results not visible after search: {e}")
+
+    collected = []
     try:
-        page.wait_for_load_state("networkidle")
-    except Exception:
-        logger.debug("[DISCOVERY] networkidle wait timed out before accordion extraction")
+        selects = page.locator("select")
+        if selects.count() < 3:
+            logger.error("[DISCOVERY] Expected filter dropdowns were not found")
+            return []
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Failed to access filter dropdowns: {e}")
+        return []
 
-    page.wait_for_timeout(1000)
+    try:
+        state_select = page.locator("select").nth(2)
+        state_select.wait_for(state="visible", timeout=10000)
+        state_select.click()
+        page.wait_for_timeout(300)
+        state_select.select_option(label="UT of Jammu and Kashmir")
+        page.wait_for_timeout(1000)
+        form = page.locator("select").nth(0).locator("xpath=ancestor::form")
+        _click_search(form)
+        _wait_for_results()
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Initial state-filter application failed: {e}")
 
-    schemes = _extract_schemes_accordion(page)
-    schemes = _deduplicate(schemes)
-    logger.info(f"[DISCOVERY] Total schemes collected: {len(schemes)}")
-    return schemes
+    try:
+        scheme_select = page.locator("select").nth(0)
+        option_count = scheme_select.locator("option").count()
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Could not read scheme dropdown options: {e}")
+        return []
+
+    processed = 0
+    for option_index in range(1, option_count):
+        try:
+            selects = page.locator("select")
+            if selects.count() < 3:
+                logger.debug("[DISCOVERY] Filter dropdowns unavailable during scheme loop")
+                continue
+
+            scheme_select = selects.nth(0)
+            state_select = selects.nth(2)
+            form = scheme_select.locator("xpath=ancestor::form")
+            options = scheme_select.locator("option")
+            if option_index >= options.count():
+                continue
+
+            option_label = " ".join((options.nth(option_index).inner_text() or "").split()).strip()
+            if not option_label or option_label.lower() in {"select scheme", "select", "all"}:
+                continue
+
+            for attempt in range(2):
+                try:
+                    state_select = page.locator("select").nth(2)
+                    state_select.select_option(label="UT of Jammu and Kashmir")
+                    page.wait_for_timeout(500)
+
+                    scheme_select = page.locator("select").nth(0)
+                    scheme_select.select_option(label=option_label)
+                    page.wait_for_timeout(1000)
+
+                    form = scheme_select.locator("xpath=ancestor::form")
+                    _click_search(form)
+                    _wait_for_results()
+                    break
+                except Exception as e:
+                    logger.debug(
+                        f"[DISCOVERY] Retry {attempt + 1} failed for scheme option {option_label}: {e}"
+                    )
+                    if attempt == 1:
+                        raise
+                    page.wait_for_timeout(1000)
+
+            extracted = _extract_schemes_accordion(page)
+            if extracted:
+                collected.extend(extracted)
+            processed += 1
+            logger.info(
+                f"[DISCOVERY] Extracted {len(extracted)} schemes for scheme option {option_label}"
+            )
+
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Scheme option loop failed at index {option_index}: {e}")
+            continue
+
+    collected = _deduplicate(collected)
+    logger.info(
+        f"[DISCOVERY] Processed {processed} scheme options and collected {len(collected)} schemes"
+    )
+    return collected
 
 
 def _scrape_schemes_playwright():
