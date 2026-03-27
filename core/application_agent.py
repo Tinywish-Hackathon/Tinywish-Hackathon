@@ -75,6 +75,14 @@ def _parse_application_result(result, scheme_name):
         "steps": [],
     }
 
+    if isinstance(result, dict):
+        return {
+            "scheme": result.get("scheme", scheme_name),
+            "apply_link": result.get("apply_link", ""),
+            "documents": result.get("documents", []),
+            "steps": result.get("steps", []),
+        }
+
     def _materialize(value):
         if value is None:
             return None
@@ -208,7 +216,15 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
                     if log_text:
                         logger.info(f"[APPLICATION] {log_text}")
 
-                if parsed_data:
+                if isinstance(parsed_data, dict):
+                    if (
+                        "steps" in parsed_data
+                        or "documents" in parsed_data
+                        or "apply_link" in parsed_data
+                    ):
+                        final_payload = parsed_data
+
+                if final_payload is None:
                     final_payload = parsed_data
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -218,4 +234,5 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
         logger.error(f"[APPLICATION] TinyFish network error: {e}")
         raise
 
+    logger.info(f"[APPLICATION] FINAL STRUCTURED DATA: {final_payload}")
     return _parse_application_result(final_payload, scheme_name)
