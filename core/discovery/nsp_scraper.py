@@ -340,19 +340,19 @@ def _extract_schemes_accordion(page):
         for index in range(card_count):
             try:
                 card = cards.nth(index)
-                card_text = _clean_text(card.inner_text())
+                name = ""
+                try:
+                    strongs = card.locator("strong")
+                    if strongs.count() > 0:
+                        name = _clean_text(strongs.first.inner_text())
+                except Exception:
+                    name = ""
+
+                card_text = card.inner_text()
                 if not card_text:
                     continue
-                lines = [line.strip() for line in card_text.splitlines() if line.strip()]
-                name = ""
-                for line in lines:
-                    lowered = line.lower()
-                    if "scheme open from" in lowered:
-                        continue
-                    if len(line) > 10:
-                        name = line
-                        break
                 if not name:
+                    lines = [line.strip() for line in card_text.splitlines() if line.strip()]
                     name = lines[0] if lines else ""
                 if _add_scheme(name):
                     extracted += 1
@@ -401,30 +401,33 @@ def _extract_schemes_accordion(page):
         logger.error(f"[DISCOVERY] Could not read ministry options: {e}")
         return []
 
+    try:
+        search_btn = form.get_by_role("button", name="Search")
+    except Exception:
+        search_btn = None
+
     processed_ministries = 0
-    for option_index in range(option_count):
+    for option_index in range(1, option_count):
         try:
-            option = options.nth(option_index)
-            option_label = _clean_text(option.inner_text())
-            option_value = option.get_attribute("value") or ""
+            option_label = _clean_text(options.nth(option_index).inner_text())
         except Exception:
             continue
 
-        if not option_value or not option_label:
-            continue
-        if option_label.lower() in {"select", "select ministry", "all"}:
+        if not option_label or option_label.lower() in {"select", "select ministry", "all"}:
             continue
 
         try:
-            ministry_select.select_option(value=option_value)
+            ministry_select.select_option(label=option_label)
             page.wait_for_timeout(1000)
         except Exception as e:
             logger.debug(f"[DISCOVERY] Ministry select failed for {option_label}: {e}")
             continue
 
         try:
-            search_btn = form.get_by_role("button", name="Search")
-            search_btn.click()
+            if search_btn is not None:
+                search_btn.click()
+            else:
+                form.locator('button[type="submit"]').click()
         except Exception as e:
             try:
                 form.locator('button[type="submit"]').click()
@@ -434,8 +437,39 @@ def _extract_schemes_accordion(page):
                 )
                 continue
 
+        page.wait_for_timeout(2000)
         _wait_for_results()
-        extracted = _extract_cards()
+
+        extracted = 0
+        try:
+            cards = page.locator("div:has-text('Scheme Open from')")
+            card_count = cards.count()
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Card lookup failed for {option_label}: {e}")
+            card_count = 0
+
+        for card_index in range(card_count):
+            try:
+                card = cards.nth(card_index)
+                name = ""
+                try:
+                    strongs = card.locator("strong")
+                    if strongs.count() > 0:
+                        name = _clean_text(strongs.first.inner_text())
+                except Exception:
+                    name = ""
+
+                if not name:
+                    text = card.inner_text()
+                    lines = [line.strip() for line in text.splitlines() if line.strip()]
+                    name = lines[0] if lines else ""
+
+                if _add_scheme(name):
+                    schemes[-1]["eligibility"] = f"From {option_label}"
+                    extracted += 1
+            except Exception:
+                continue
+
         processed_ministries += 1
         logger.info(f"[DISCOVERY] Extracted {extracted} schemes for ministry {option_label}")
 
