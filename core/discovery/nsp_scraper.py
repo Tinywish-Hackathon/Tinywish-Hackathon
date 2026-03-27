@@ -501,51 +501,36 @@ def safe_click_fuzzy(page, candidates, blocklist=None):
 
 
 def _navigate_to_schemes(page):
-    """Navigate from homepage to All-Scholarships via Students → Schemes on NSP."""
-    logger.info("[DISCOVERY] Navigating via homepage to schemes page")
-    page.goto(_HOMEPAGE_URL)
+    """Navigate directly to the NSP All-Scholarships page."""
+    target_url = "https://scholarships.gov.in/All-Scholarships"
+
     try:
-        page.wait_for_load_state("networkidle")
+        page.goto(target_url, wait_until="networkidle")
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        logger.error(f"[NAV] Direct navigation failed: {e}")
+        return False
+
+    if "All-Scholarships" not in page.url:
+        logger.error(f"[NAV] Unexpected URL after direct navigation: {page.url}")
+        return False
+
+    try:
+        has_title = page.get_by_text("Schemes On NSP").count() > 0
     except Exception:
-        logger.debug("[NAV] networkidle wait timed out on homepage")
+        has_title = False
 
-    def _click(label, fallback):
-        selectors = [
-            (lambda: page.get_by_text(label)),
-            (lambda: page.locator(f"text={label}")),
-            (lambda: page.locator(f"text={fallback}")),
-        ]
-        for selector in selectors:
-            try:
-                locator = selector()
-                if locator.count() == 0:
-                    continue
-                locator.first.click()
-                page.wait_for_load_state("networkidle")
-                page.wait_for_timeout(1000)
-                print(f"[NAV] Clicked {label}")
-                logger.info(f"[NAV] Clicked {label}")
-                return True
-            except Exception as e:
-                logger.debug(f"[NAV] Click attempt for {label} failed: {e}")
+    try:
+        has_accordion = page.locator(".accordion-item, [data-bs-toggle='collapse']").count() > 0
+    except Exception:
+        has_accordion = False
+
+    if not has_title and not has_accordion:
+        logger.error("[NAV] Schemes page did not expose expected content")
         return False
 
-    if not _click("Students", "Students"):
-        logger.error("[NAV] Unable to click Students")
-        return False
-
-    if not _click("Schemes on NSP", "Schemes"):
-        logger.error("[NAV] Unable to click Schemes on NSP")
-        return False
-
-    final_url = page.url
-    print(f"[NAV] Final URL: {final_url}")
-    logger.info(f"[NAV] Final URL: {final_url}")
-
-    if "All-Scholarships" not in final_url:
-        logger.error("[NAV] All-Scholarships not found in URL after navigation")
-        return False
-
+    print("[NAV] Direct navigation to schemes page successful")
+    logger.info("[NAV] Direct navigation to schemes page successful")
     return True
 
 
