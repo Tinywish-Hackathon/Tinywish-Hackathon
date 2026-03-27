@@ -68,16 +68,146 @@ def _save_cache(schemes):
 # STRATEGY 1: TINYFISH (PRIMARY)
 # ─────────────────────────────────────────────────
 
-def try_tinyfish():
-    """Use TinyFish AI web agent to extract schemes.
+def parse_tinyfish_result(result):
+    """Normalize TinyFish responses into a list of scheme dicts."""
+    def _get_value(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
 
-    Returns list of scheme dicts, or None if TinyFish is not available
-    or fails.
-    """
+    def _strip_code_fence(value):
+        if not isinstance(value, str):
+            return value
+
+        cleaned = value.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:].strip()
+        return cleaned
+
+    def _decode(value):
+        if isinstance(value, str):
+            cleaned = _strip_code_fence(value)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                return cleaned
+        return value
+
+    def _normalize_item(item):
+        if not isinstance(item, dict):
+            return None
+
+        name = (
+            item.get("name")
+            or item.get("scheme_name")
+            or item.get("scheme")
+            or item.get("title")
+        )
+        eligibility = (
+            item.get("eligibility")
+            or item.get("eligibility_criteria")
+            or item.get("criteria")
+            or item.get("description")
+            or ""
+        )
+
+        if not name:
+            return None
+
+        return {
+            "name": str(name).strip(),
+            "eligibility": str(eligibility).strip(),
+        }
+
+    def _extract(value):
+        value = _decode(value)
+
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            normalized = []
+            for item in value:
+                normalized.extend(_extract(item))
+            return normalized
+
+        if isinstance(value, dict):
+            normalized_item = _normalize_item(value)
+            if normalized_item:
+                return [normalized_item]
+
+            for key in (
+                "data",
+                "resultJson",
+                "result_json",
+                "output",
+                "result",
+                "final",
+                "response",
+                "content",
+                "text",
+                "message",
+                "items",
+                "results",
+                "value",
+            ):
+                extracted = _extract(value.get(key))
+                if extracted:
+                    return extracted
+            return []
+
+        if isinstance(value, str):
+            decoded = _decode(value)
+            if decoded is not value:
+                return _extract(decoded)
+            return []
+
+        for key in (
+            "data",
+            "resultJson",
+            "result_json",
+            "output",
+            "result",
+            "final",
+            "response",
+            "content",
+            "text",
+            "message",
+            "items",
+            "results",
+            "value",
+        ):
+            extracted = _extract(_get_value(value, key))
+            if extracted:
+                return extracted
+
+        return []
+
+    normalized = _extract(result)
+    deduped = []
+    seen = set()
+    for item in normalized:
+        key = item["name"].strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def try_tinyfish():
+    """Use TinyFish AI web agent to extract schemes."""
     try:
         from tinyfish import TinyFish  # noqa: F401
     except ImportError:
-        logger.info("[DISCOVERY] TinyFish not installed — skipping AI strategy")
+        logger.info("[DISCOVERY] TinyFish not installed - skipping AI strategy")
         return None
 
     try:
@@ -92,9 +222,7 @@ def try_tinyfish():
     print("[DISCOVERY] Using TinyFish...")
     logger.info("[DISCOVERY] Using TinyFish...")
 
-    try:
-        result = client.run(
-            goal="""
+    goal = """
             Go to https://scholarships.gov.in
 
             Do NOT click login, apply, or OTR.
@@ -109,25 +237,116 @@ def try_tinyfish():
             - eligibility (if visible)
 
             Return JSON list
-            """,
-            max_steps=40,
-        )
+            """
 
-        if result and hasattr(result, "data") and result.data:
-            schemes = result.data
-            # Normalize structure
-            if isinstance(schemes, list):
-                normalized = []
-                for s in schemes:
-                    if isinstance(s, dict) and "name" in s:
-                        normalized.append({
-                            "name": str(s.get("name", "")).strip(),
-                            "eligibility": str(s.get("eligibility", "")).strip(),
-                        })
-                if normalized:
-                    print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
-                    logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
-                    return normalized
+    def _get_value(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    def _call_with_variants(fn):
+        last_error = None
+        kwargs_attempts = [
+            {"goal": goal, "max_steps": 40},
+            {"instructions": goal, "max_steps": 40},
+            {"prompt": goal, "max_steps": 40},
+            {"task": goal, "max_steps": 40},
+            {"input": goal, "max_steps": 40},
+            {"goal": goal},
+            {"instructions": goal},
+            {"prompt": goal},
+            {"task": goal},
+            {"input": goal},
+        ]
+
+        for kwargs in kwargs_attempts:
+            try:
+                return fn(**kwargs)
+            except TypeError as e:
+                last_error = e
+
+        for args in ((goal, 40), (goal,)):
+            try:
+                return fn(*args)
+            except TypeError as e:
+                last_error = e
+
+        if last_error:
+            raise last_error
+        return fn()
+
+    def _collect_stream(stream_obj):
+        final_payload = None
+
+        try:
+            iterator = iter(stream_obj)
+        except TypeError:
+            return stream_obj
+
+        for event in iterator:
+            for key in (
+                "resultJson",
+                "result_json",
+                "data",
+                "output",
+                "result",
+                "final",
+                "response",
+                "content",
+                "text",
+                "message",
+            ):
+                value = _get_value(event, key)
+                if value is not None:
+                    final_payload = value
+
+            if final_payload is None:
+                final_payload = event
+
+        for attr in ("get_final_response", "final_response", "response", "result", "output", "data"):
+            value = _get_value(stream_obj, attr)
+            if callable(value):
+                try:
+                    value = value()
+                except Exception:
+                    continue
+            if value is not None:
+                final_payload = value
+
+        return final_payload
+
+    def _run_tinyfish():
+        attempts = [
+            ("client.agent.stream", getattr(getattr(client, "agent", None), "stream", None), True),
+            ("client.agents.run", getattr(getattr(client, "agents", None), "run", None), False),
+            ("client.runs.create", getattr(getattr(client, "runs", None), "create", None), False),
+            ("client.execute", getattr(client, "execute", None), False),
+        ]
+
+        last_error = None
+        for label, fn, is_stream in attempts:
+            if not callable(fn):
+                continue
+
+            try:
+                logger.info(f"[DISCOVERY] TinyFish attempting {label}")
+                result = _call_with_variants(fn)
+                return _collect_stream(result) if is_stream else result
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[DISCOVERY] TinyFish {label} failed: {e}")
+
+        if last_error:
+            raise last_error
+        raise AttributeError("No supported TinyFish execution method found")
+
+    try:
+        result = _run_tinyfish()
+        normalized = parse_tinyfish_result(result)
+        if normalized:
+            print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
+            logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
+            return normalized
 
         print("[DISCOVERY] TinyFish failed -> fallback")
         logger.warning("[DISCOVERY] TinyFish returned no usable data")
