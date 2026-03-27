@@ -194,6 +194,8 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
     )
 
     final_payload = None
+    last_valid_json = None
+    last_parsed_data = None
 
     try:
         with request.urlopen(req, timeout=180) as response:
@@ -203,6 +205,8 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
                     parsed_data = json.loads(raw_data)
                 except json.JSONDecodeError:
                     pass
+
+                last_parsed_data = parsed_data
 
                 logger.info(f"[APPLICATION] TinyFish event: {event_name}")
 
@@ -217,15 +221,16 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
                         logger.info(f"[APPLICATION] {log_text}")
 
                 if isinstance(parsed_data, dict):
-                    if (
-                        "steps" in parsed_data
-                        or "documents" in parsed_data
-                        or "apply_link" in parsed_data
-                    ):
-                        final_payload = parsed_data
+                    if parsed_data.get("type") in ["STARTED", "STEP", "MESSAGE"]:
+                        continue
 
-                if final_payload is None:
-                    final_payload = parsed_data
+                    if any(key in parsed_data for key in ["steps", "documents", "apply_link"]):
+                        last_valid_json = parsed_data
+
+            if last_valid_json:
+                final_payload = last_valid_json
+            if final_payload is None:
+                final_payload = last_parsed_data
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         logger.error(f"[APPLICATION] TinyFish HTTP error {e.code}: {body}")
