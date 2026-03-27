@@ -70,15 +70,10 @@ def _save_cache(schemes):
 
 def parse_tinyfish_result(result):
     """Normalize TinyFish responses into a list of scheme dicts."""
-    def _get_value(obj, key):
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
 
-    def _strip_code_fence(value):
+    def _strip_code(value):
         if not isinstance(value, str):
             return value
-
         cleaned = value.strip()
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()
@@ -91,109 +86,63 @@ def parse_tinyfish_result(result):
                 cleaned = cleaned[4:].strip()
         return cleaned
 
-    def _decode(value):
+    def _to_struct(value):
         if isinstance(value, str):
-            cleaned = _strip_code_fence(value)
+            cleaned = _strip_code(value)
             try:
                 return json.loads(cleaned)
             except json.JSONDecodeError:
                 return cleaned
         return value
 
-    def _normalize_item(item):
-        if not isinstance(item, dict):
+    def _normalize(entry):
+        if not isinstance(entry, dict):
             return None
-
         name = (
-            item.get("name")
-            or item.get("scheme_name")
-            or item.get("scheme")
-            or item.get("title")
+            entry.get("name")
+            or entry.get("schemeName")
+            or entry.get("scheme_name")
+            or entry.get("title")
         )
         eligibility = (
-            item.get("eligibility")
-            or item.get("eligibility_criteria")
-            or item.get("criteria")
-            or item.get("description")
+            entry.get("eligibility")
+            or entry.get("eligibilityText")
+            or entry.get("description")
             or ""
         )
-
         if not name:
             return None
-
         return {
             "name": str(name).strip(),
             "eligibility": str(eligibility).strip(),
         }
 
-    def _extract(value):
-        value = _decode(value)
-
-        if value is None:
+    def _walk(value):
+        normalized = _to_struct(value)
+        if normalized is None:
             return []
-
-        if isinstance(value, list):
-            normalized = []
-            for item in value:
-                normalized.extend(_extract(item))
-            return normalized
-
-        if isinstance(value, dict):
-            normalized_item = _normalize_item(value)
-            if normalized_item:
-                return [normalized_item]
-
-            for key in (
-                "data",
-                "resultJson",
-                "result_json",
-                "output",
-                "result",
-                "final",
-                "response",
-                "content",
-                "text",
-                "message",
-                "items",
-                "results",
-                "value",
-            ):
-                extracted = _extract(value.get(key))
-                if extracted:
-                    return extracted
-            return []
-
-        if isinstance(value, str):
-            decoded = _decode(value)
-            if decoded is not value:
-                return _extract(decoded)
-            return []
-
-        for key in (
-            "data",
-            "resultJson",
-            "result_json",
-            "output",
-            "result",
-            "final",
-            "response",
-            "content",
-            "text",
-            "message",
-            "items",
-            "results",
-            "value",
-        ):
-            extracted = _extract(_get_value(value, key))
-            if extracted:
-                return extracted
-
+        if isinstance(normalized, list):
+            result = []
+            for item in normalized:
+                result.extend(_walk(item))
+            return result
+        if isinstance(normalized, dict):
+            item = _normalize(normalized)
+            if item:
+                return [item]
+            for key in ("data", "output", "result", "response", "content", "items", "results"):
+                if key in normalized:
+                    result = _walk(normalized[key])
+                    if result:
+                        return result
+        if isinstance(normalized, str):
+            return _walk(_to_struct(normalized))
         return []
 
-    normalized = _extract(result)
+    extracted = _walk(result)
     deduped = []
     seen = set()
-    for item in normalized:
+    for item in extracted:
         key = item["name"].strip().lower()
         if not key or key in seen:
             continue
@@ -222,140 +171,72 @@ def try_tinyfish():
     print("[DISCOVERY] Using TinyFish...")
     logger.info("[DISCOVERY] Using TinyFish...")
 
-    goal = """
-            Go to https://scholarships.gov.in
+    GOAL = """
+        Go to https://scholarships.gov.in
+        Do NOT click login, apply, or OTR.
+        Navigate like a user:
+        - Click 'Students'
+        - Click 'Schemes on NSP'
+        - Open schemes list
+        Extract:
+        - scheme name
+        - eligibility (if visible)
+        Return JSON list
+    """
+    URL = _HOMEPAGE_URL
 
-            Do NOT click login, apply, or OTR.
-
-            Navigate like a user:
-            - Click 'Students'
-            - Click 'Schemes on NSP'
-            - Open schemes list
-
-            Extract:
-            - scheme name
-            - eligibility (if visible)
-
-            Return JSON list
-            """
-
-    def _get_value(obj, key):
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
-
-    def _call_with_variants(fn):
-        last_error = None
-        kwargs_attempts = [
-            {"goal": goal, "max_steps": 40},
-            {"instructions": goal, "max_steps": 40},
-            {"prompt": goal, "max_steps": 40},
-            {"task": goal, "max_steps": 40},
-            {"input": goal, "max_steps": 40},
-            {"goal": goal},
-            {"instructions": goal},
-            {"prompt": goal},
-            {"task": goal},
-            {"input": goal},
-        ]
-
-        for kwargs in kwargs_attempts:
-            try:
-                return fn(**kwargs)
-            except TypeError as e:
-                last_error = e
-
-        for args in ((goal, 40), (goal,)):
-            try:
-                return fn(*args)
-            except TypeError as e:
-                last_error = e
-
-        if last_error:
-            raise last_error
-        return fn()
-
-    def _collect_stream(stream_obj):
-        final_payload = None
-
+    def _collect_stream(stream):
+        payload = None
         try:
-            iterator = iter(stream_obj)
+            iterator = iter(stream)
         except TypeError:
-            return stream_obj
-
+            return stream
         for event in iterator:
-            for key in (
-                "resultJson",
-                "result_json",
-                "data",
-                "output",
-                "result",
-                "final",
-                "response",
-                "content",
-                "text",
-                "message",
-            ):
-                value = _get_value(event, key)
-                if value is not None:
-                    final_payload = value
-
-            if final_payload is None:
-                final_payload = event
-
-        for attr in ("get_final_response", "final_response", "response", "result", "output", "data"):
-            value = _get_value(stream_obj, attr)
+            for attr in ("data", "output", "result"):
+                value = getattr(event, attr, None) if not isinstance(event, dict) else event.get(attr)
+                if value:
+                    payload = value
+            if payload is None:
+                payload = event
+        for attr in ("data", "output", "result"):
+            value = getattr(stream, attr, None)
             if callable(value):
                 try:
                     value = value()
                 except Exception:
-                    continue
-            if value is not None:
-                final_payload = value
+                    value = None
+            if value:
+                payload = value
+        return payload
 
-        return final_payload
+    attempts = [
+        ("client.agent.stream", lambda: client.agent.stream(goal=GOAL, start_url=URL), True),
+        ("client.agent.stream_dict", lambda: client.agent.stream({"goal": GOAL, "start_url": URL}), True),
+        ("client.agents.run", lambda: client.agents.run(goal=GOAL, start_url=URL), False),
+        ("client.runs.create", lambda: client.runs.create(goal=GOAL, start_url=URL), False),
+        ("client.execute", lambda: client.execute(goal=GOAL, url=URL), False),
+    ]
 
-    def _run_tinyfish():
-        attempts = [
-            ("client.agent.stream", getattr(getattr(client, "agent", None), "stream", None), True),
-            ("client.agents.run", getattr(getattr(client, "agents", None), "run", None), False),
-            ("client.runs.create", getattr(getattr(client, "runs", None), "create", None), False),
-            ("client.execute", getattr(client, "execute", None), False),
-        ]
+    last_error = None
+    for label, attempt, is_stream in attempts:
+        try:
+            logger.info(f"[DISCOVERY] TinyFish attempting {label}")
+            response = attempt()
+            payload = _collect_stream(response) if is_stream else response
+            normalized = parse_tinyfish_result(payload)
+            if normalized:
+                print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
+                logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
+                return normalized
+            logger.warning("[DISCOVERY] TinyFish returned no usable data")
+            return None
+        except Exception as e:
+            last_error = e
+            logger.warning(f"[DISCOVERY] TinyFish {label} failed: {e}")
 
-        last_error = None
-        for label, fn, is_stream in attempts:
-            if not callable(fn):
-                continue
-
-            try:
-                logger.info(f"[DISCOVERY] TinyFish attempting {label}")
-                result = _call_with_variants(fn)
-                return _collect_stream(result) if is_stream else result
-            except Exception as e:
-                last_error = e
-                logger.warning(f"[DISCOVERY] TinyFish {label} failed: {e}")
-
-        if last_error:
-            raise last_error
-        raise AttributeError("No supported TinyFish execution method found")
-
-    try:
-        result = _run_tinyfish()
-        normalized = parse_tinyfish_result(result)
-        if normalized:
-            print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
-            logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
-            return normalized
-
-        print("[DISCOVERY] TinyFish failed -> fallback")
-        logger.warning("[DISCOVERY] TinyFish returned no usable data")
-        return None
-
-    except Exception as e:
-        logger.error(f"[DISCOVERY] TinyFish failed: {e}")
-        print("[DISCOVERY] TinyFish failed -> fallback")
-        return None
+    if last_error:
+        logger.error(f"[DISCOVERY] TinyFish failed: {last_error}")
+    return None
 
 
 def _try_tinyfish():
