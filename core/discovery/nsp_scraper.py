@@ -377,16 +377,10 @@ def _extract_schemes_accordion(page):
         logger.error(f"[DISCOVERY] Failed to access filter selects: {e}")
         return []
 
-    scheme_type_select = selects.nth(0)
+    scheme_select = selects.nth(0)
     ministry_select = selects.nth(1)
     state_select = selects.nth(2)
-    form = ministry_select.locator("xpath=ancestor::form")
-
-    try:
-        scheme_type_select.select_option(label="Central Sector Schemes")
-        page.wait_for_timeout(1000)
-    except Exception as e:
-        logger.warning(f"[DISCOVERY] Could not select scheme type: {e}")
+    form = scheme_select.locator("xpath=ancestor::form")
 
     try:
         state_select.select_option(label="UT of Jammu and Kashmir")
@@ -395,36 +389,44 @@ def _extract_schemes_accordion(page):
         logger.warning(f"[DISCOVERY] Could not select state filter: {e}")
 
     try:
-        options = ministry_select.locator("option")
+        options = scheme_select.locator("option")
         option_count = options.count()
     except Exception as e:
-        logger.error(f"[DISCOVERY] Could not read ministry options: {e}")
+        logger.error(f"[DISCOVERY] Could not read scheme options: {e}")
         return []
 
-    try:
-        search_btn = form.get_by_role("button", name="Search")
-    except Exception:
-        search_btn = None
-
-    processed_ministries = 0
+    processed_options = 0
     for option_index in range(1, option_count):
         try:
+            selects = page.locator("select")
+            if selects.count() < 3:
+                logger.debug("[DISCOVERY] Filter dropdowns re-rendered unexpectedly")
+                continue
+
+            scheme_select = selects.nth(0)
+            ministry_select = selects.nth(1)
+            state_select = selects.nth(2)
+            form = scheme_select.locator("xpath=ancestor::form")
+            options = scheme_select.locator("option")
             option_label = _clean_text(options.nth(option_index).inner_text())
         except Exception:
             continue
 
-        if not option_label or option_label.lower() in {"select", "select ministry", "all"}:
+        if not option_label or option_label.lower() in {"select scheme", "select", "all"}:
             continue
 
         try:
-            ministry_select.select_option(label=option_label)
+            scheme_select.click()
+            page.wait_for_timeout(300)
+            scheme_select.select_option(label=option_label)
             page.wait_for_timeout(1000)
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Ministry select failed for {option_label}: {e}")
+            logger.debug(f"[DISCOVERY] Scheme select failed for {option_label}: {e}")
             continue
 
         try:
-            if search_btn is not None:
+            search_btn = form.get_by_role("button", name="Search")
+            if search_btn.count() > 0:
                 search_btn.click()
             else:
                 form.locator('button[type="submit"]').click()
@@ -470,12 +472,12 @@ def _extract_schemes_accordion(page):
             except Exception:
                 continue
 
-        processed_ministries += 1
-        logger.info(f"[DISCOVERY] Extracted {extracted} schemes for ministry {option_label}")
+        processed_options += 1
+        logger.info(f"[DISCOVERY] Extracted {extracted} schemes for scheme option {option_label}")
 
     schemes = _deduplicate(schemes)
     logger.info(
-        f"[DISCOVERY] Filter workflow processed {processed_ministries} ministries and extracted {len(schemes)} schemes"
+        f"[DISCOVERY] Filter workflow processed {processed_options} scheme options and extracted {len(schemes)} schemes"
     )
     return schemes
 
