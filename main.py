@@ -1,6 +1,5 @@
 import sys
 import argparse
-import json
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
 from executor.actions import (
@@ -68,8 +67,26 @@ def run_discovery():
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
                 try:
-                    application_result = run_tinyfish_application_agent(selected["name"])
-                    print(json.dumps(application_result, indent=2, ensure_ascii=False))
+                    result = run_tinyfish_application_agent(selected["name"])
+
+                    print("\n" + "=" * 80)
+                    print("APPLICATION DETAILS")
+                    print("=" * 80)
+                    print(f"Scheme: {result['scheme']}")
+                    print(f"Apply Link: {result['apply_link']}")
+
+                    print("\nRequired Documents:")
+                    for doc in result["documents"]:
+                        print(f"- {doc}")
+
+                    print("\nApplication Steps:")
+                    for i, step in enumerate(result["steps"], 1):
+                        print(f"{i}. {step}")
+
+                    if not result["apply_link"]:
+                        print("⚠️ Could not find direct apply link. Check portal manually.")
+
+                    print("=" * 80)
                 except Exception as e:
                     logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
                     print("Application agent failed. Check logs for details.")
