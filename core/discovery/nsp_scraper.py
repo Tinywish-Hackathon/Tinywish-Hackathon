@@ -11,6 +11,7 @@ All navigation is intent-safe: discovery mode blocks login/apply/OTR clicks.
 import json
 import os
 
+from config import PROFILE_PATH
 from core.integrations.tinyfish_client import get_tinyfish_client
 from utils.logger import get_logger
 
@@ -104,9 +105,11 @@ def parse_tinyfish_result(result):
             or entry.get("scheme_name")
             or entry.get("title")
         )
+        reason = entry.get("reason") or entry.get("why") or entry.get("rationale") or ""
         eligibility = (
             entry.get("eligibility")
             or entry.get("eligibilityText")
+            or (f"Derived from reasoning: {reason}" if reason else "")
             or entry.get("description")
             or ""
         )
@@ -152,7 +155,7 @@ def parse_tinyfish_result(result):
 
 
 def try_tinyfish():
-    """Use TinyFish AI web agent to extract schemes."""
+    """Use TinyFish as a reasoning layer for scholarship recommendations."""
     try:
         from tinyfish import TinyFish  # noqa: F401
     except ImportError:
@@ -168,65 +171,58 @@ def try_tinyfish():
         logger.error(f"[DISCOVERY] TinyFish client init failed: {e}")
         return None
 
-    print("[DISCOVERY] Using TinyFish...")
-    logger.info("[DISCOVERY] Using TinyFish...")
+    print("[DISCOVERY] TinyFish used for intelligent recommendations")
+    logger.info("[DISCOVERY] TinyFish used for intelligent recommendations")
 
-    GOAL = """
-        Go to https://scholarships.gov.in
-        Do NOT click login, apply, or OTR.
-        Navigate like a user:
-        - Click 'Students'
-        - Click 'Schemes on NSP'
-        - Open schemes list
-        Extract:
-        - scheme name
-        - eligibility (if visible)
-        Return JSON list
-    """
-    URL = _HOMEPAGE_URL
+    profile = {
+        "state": "Unknown",
+        "category": "Unknown",
+        "income": "Unknown",
+        "course": "Unknown",
+    }
+    try:
+        with open(PROFILE_PATH, "r", encoding="utf-8") as profile_file:
+            raw_profile = json.load(profile_file)
+        profile["state"] = raw_profile.get("state", profile["state"])
+        profile["category"] = raw_profile.get("category", profile["category"])
+        profile["income"] = raw_profile.get("annual_income", profile["income"])
+        profile["course"] = raw_profile.get("course_level", profile["course"])
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] TinyFish profile load failed: {e}")
 
-    def _collect_stream(stream):
-        payload = None
-        try:
-            iterator = iter(stream)
-        except TypeError:
-            return stream
-        for event in iterator:
-            for attr in ("data", "output", "result"):
-                value = getattr(event, attr, None) if not isinstance(event, dict) else event.get(attr)
-                if value:
-                    payload = value
-            if payload is None:
-                payload = event
-        for attr in ("data", "output", "result"):
-            value = getattr(stream, attr, None)
-            if callable(value):
-                try:
-                    value = value()
-                except Exception:
-                    value = None
-            if value:
-                payload = value
-        return payload
+    prompt = f"""
+Given this user profile:
+- State: {profile['state']}
+- Category: {profile['category']}
+- Income: {profile['income']}
+- Course: {profile['course']}
+
+Suggest relevant scholarship schemes from India's National Scholarship Portal.
+
+Return JSON:
+[
+  {{
+    "name": "...",
+    "reason": "...",
+    "priority": 1-5
+  }}
+]
+"""
 
     attempts = [
-        ("client.agent.stream", lambda: client.agent.stream(goal=GOAL, start_url=URL), True),
-        ("client.agent.stream_dict", lambda: client.agent.stream({"goal": GOAL, "start_url": URL}), True),
-        ("client.agents.run", lambda: client.agents.run(goal=GOAL, start_url=URL), False),
-        ("client.runs.create", lambda: client.runs.create(goal=GOAL, start_url=URL), False),
-        ("client.execute", lambda: client.execute(goal=GOAL, url=URL), False),
+        ("client.agent.run", lambda: client.agent.run(goal=prompt)),
+        ("client.agent", lambda: client.agent(prompt=prompt)),
+        ("client.run", lambda: client.run(prompt=prompt)),
     ]
 
     last_error = None
-    for label, attempt, is_stream in attempts:
+    for label, attempt in attempts:
         try:
             logger.info(f"[DISCOVERY] TinyFish attempting {label}")
             response = attempt()
-            payload = _collect_stream(response) if is_stream else response
-            normalized = parse_tinyfish_result(payload)
+            normalized = parse_tinyfish_result(response)
             if normalized:
-                print(f"[DISCOVERY] TinyFish success: {len(normalized)} items")
-                logger.info(f"[DISCOVERY] TinyFish extracted {len(normalized)} schemes")
+                logger.info("[DISCOVERY] TinyFish success")
                 return normalized
             logger.warning("[DISCOVERY] TinyFish returned no usable data")
             return None
