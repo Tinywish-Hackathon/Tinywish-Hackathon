@@ -213,6 +213,7 @@ def _set_max_entries(page):
 def _extract_schemes_accordion(page):
     """Scrape NSP schemes from the Select Scheme filter + accordion UI."""
     ignore_texts = {"search", "select scheme", "click here", "view details"}
+    boundary_markers = ("scheme open from", "specifications")
 
     def _clean_text(value):
         return " ".join(str(value or "").split()).strip()
@@ -247,6 +248,46 @@ def _extract_schemes_accordion(page):
             page.wait_for_timeout(500)
 
         return False
+
+    def _extract_names_from_content(content):
+        extracted_names = []
+        try:
+            raw_text = content.inner_text()
+        except Exception:
+            return extracted_names
+
+        lines = []
+        for line in str(raw_text).splitlines():
+            cleaned = _clean_text(line)
+            if cleaned:
+                lines.append(cleaned)
+
+        current_chunk = []
+
+        def _flush_chunk():
+            if not current_chunk:
+                return
+            for item in current_chunk:
+                lowered = item.lower()
+                if len(item) <= 5:
+                    continue
+                if lowered in ignore_texts:
+                    continue
+                if any(marker in lowered for marker in boundary_markers):
+                    continue
+                extracted_names.append(item)
+                return
+
+        for line in lines:
+            lowered = line.lower()
+            if any(marker in lowered for marker in boundary_markers):
+                _flush_chunk()
+                current_chunk = []
+                continue
+            current_chunk.append(line)
+
+        _flush_chunk()
+        return extracted_names
 
     def _extract_for_select_index(select_index):
         local_schemes = []
@@ -326,19 +367,11 @@ def _extract_schemes_accordion(page):
                             page.wait_for_timeout(1000)
 
                         try:
-                            nodes = content.locator("strong, h4, h5, a, li, span, p, div")
-                            node_count = nodes.count()
+                            extracted_names = _extract_names_from_content(content)
+                            for extracted_name in extracted_names:
+                                _add_local(extracted_name)
                         except Exception:
-                            node_count = 0
-
-                        for node_index in range(node_count):
-                            try:
-                                node = nodes.nth(node_index)
-                                if not node.is_visible():
-                                    continue
-                                _add_local(node.inner_text())
-                            except Exception:
-                                continue
+                            continue
                     except Exception as e:
                         logger.debug(
                             f"[DISCOVERY] Accordion extraction failed at header {header_index + 1} "
