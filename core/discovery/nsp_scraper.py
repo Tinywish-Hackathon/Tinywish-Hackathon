@@ -296,16 +296,16 @@ def _set_max_entries(page):
 
 
 def _extract_schemes_accordion(page):
-    """Extract schemes using the NSP filter workflow instead of accordion clicks."""
+    """Extract schemes by expanding dynamic accordion sections safely."""
     schemes = []
     seen = set()
 
     def _clean_text(value):
         return " ".join(str(value).split()).strip()
 
-    def _add_scheme(name):
+    def _add_scheme(name, section_name):
         cleaned = _clean_text(name)
-        if len(cleaned) < 4:
+        if len(cleaned) <= 10:
             return False
         key = cleaned.lower()
         if key in seen:
@@ -313,196 +313,83 @@ def _extract_schemes_accordion(page):
         seen.add(key)
         schemes.append({
             "name": cleaned,
-            "eligibility": "Extracted from NSP filters",
+            "eligibility": f"Scheme under {section_name}",
         })
         return True
 
-    def _wait_for_results():
-        try:
-            page.wait_for_load_state("networkidle")
-        except Exception:
-            logger.debug("[DISCOVERY] networkidle wait timed out after search")
-        page.wait_for_timeout(2000)
-        try:
-            page.wait_for_selector("text=Scheme", timeout=10000)
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Scheme text wait timed out: {e}")
+    headers = page.locator('[data-bs-toggle="collapse"]')
+    try:
+        header_count = headers.count()
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Failed to locate accordion headers: {e}")
+        return []
 
-    def _extract_cards():
-        extracted = 0
-        try:
-            cards = page.locator("div:has-text('Scheme Open from')")
-            card_count = cards.count()
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Card lookup failed: {e}")
-            return 0
+    logger.info(f"[DISCOVERY] Accordion sections found: {header_count}")
 
-        for index in range(card_count):
+    for index in range(header_count):
+        try:
+            headers = page.locator('[data-bs-toggle="collapse"]')
+            if index >= headers.count():
+                break
+
+            header = headers.nth(index)
             try:
-                card = cards.nth(index)
-                name = ""
-                try:
-                    strongs = card.locator("strong")
-                    if strongs.count() > 0:
-                        name = _clean_text(strongs.first.inner_text())
-                except Exception:
-                    name = ""
+                header.scroll_into_view_if_needed()
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
 
-                card_text = card.inner_text()
-                if not card_text:
+            try:
+                if not header.is_visible():
+                    logger.debug(f"[DISCOVERY] Accordion header {index + 1} is not visible")
                     continue
-                if not name:
-                    lines = [line.strip() for line in card_text.splitlines() if line.strip()]
-                    name = lines[0] if lines else ""
-                if _add_scheme(name):
-                    extracted += 1
             except Exception:
                 continue
-        return extracted
 
-    try:
-        page.goto("https://scholarships.gov.in/All-Scholarships", wait_until="networkidle")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        logger.error(f"[DISCOVERY] Filter workflow navigation failed: {e}")
-        return []
-
-    selects = page.locator("select")
-    try:
-        if selects.count() < 3:
-            logger.error("[DISCOVERY] Expected NSP filter selects were not found")
-            return []
-    except Exception as e:
-        logger.error(f"[DISCOVERY] Failed to access filter selects: {e}")
-        return []
-
-    scheme_select = selects.nth(0)
-    ministry_select = selects.nth(1)
-    state_select = selects.nth(2)
-    form = scheme_select.locator("xpath=ancestor::form")
-
-    try:
-        search_btn = form.get_by_role("button", name="Search")
-    except Exception:
-        search_btn = None
-
-    try:
-        state_select.click()
-        page.wait_for_timeout(300)
-        state_select.select_option(label="UT of Jammu and Kashmir")
-        page.wait_for_timeout(1000)
-    except Exception as e:
-        logger.warning(f"[DISCOVERY] Could not select state filter: {e}")
-
-    try:
-        if search_btn is not None and search_btn.count() > 0:
-            search_btn.click()
-        else:
-            form.locator('button[type="submit"]').click()
-    except Exception as e:
-        try:
-            form.locator('button[type="submit"]').click()
-        except Exception as submit_error:
-            logger.warning(
-                f"[DISCOVERY] Initial state-filter search failed: {e}; fallback failed: {submit_error}"
-            )
-            return []
-
-    page.wait_for_timeout(2000)
-    _wait_for_results()
-
-    try:
-        options = scheme_select.locator("option")
-        option_count = options.count()
-    except Exception as e:
-        logger.error(f"[DISCOVERY] Could not read scheme options: {e}")
-        return []
-
-    processed_options = 0
-    for option_index in range(1, option_count):
-        try:
-            selects = page.locator("select")
-            if selects.count() < 3:
-                logger.debug("[DISCOVERY] Filter dropdowns re-rendered unexpectedly")
+            section_name = _clean_text(header.inner_text()) or f"Section {index + 1}"
+            target = header.get_attribute("data-bs-target")
+            if not target:
+                logger.debug(f"[DISCOVERY] Missing data-bs-target for {section_name}")
                 continue
 
-            scheme_select = selects.nth(0)
-            ministry_select = selects.nth(1)
-            state_select = selects.nth(2)
-            form = scheme_select.locator("xpath=ancestor::form")
-            options = scheme_select.locator("option")
-            option_label = _clean_text(options.nth(option_index).inner_text())
-        except Exception:
-            continue
-
-        if not option_label or option_label.lower() in {"select scheme", "select", "all"}:
-            continue
-
-        try:
-            scheme_select.click()
-            page.wait_for_timeout(300)
-            scheme_select.select_option(label=option_label)
-            page.wait_for_timeout(1000)
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Scheme select failed for {option_label}: {e}")
-            continue
-
-        try:
-            search_btn = form.get_by_role("button", name="Search")
-            if search_btn.count() > 0:
-                search_btn.click()
-            else:
-                form.locator('button[type="submit"]').click()
-        except Exception as e:
             try:
-                form.locator('button[type="submit"]').click()
-            except Exception as submit_error:
-                logger.debug(
-                    f"[DISCOVERY] Search click failed for {option_label}: {e}; fallback failed: {submit_error}"
-                )
+                header.click(force=True)
+                page.wait_for_timeout(1500)
+            except Exception as e:
+                logger.debug(f"[DISCOVERY] Accordion click failed for {section_name}: {e}")
                 continue
 
-        page.wait_for_timeout(2000)
-        _wait_for_results()
-
-        extracted = 0
-        try:
-            cards = page.locator("div:has-text('Scheme Open from')")
-            card_count = cards.count()
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Card lookup failed for {option_label}: {e}")
-            card_count = 0
-
-        for card_index in range(card_count):
+            content = page.locator(target)
             try:
-                card = cards.nth(card_index)
-                name = ""
+                content.wait_for(state="visible", timeout=5000)
+            except Exception as e:
+                logger.debug(f"[DISCOVERY] Accordion content did not expand for {section_name}: {e}")
+                continue
+
+            scheme_elements = content.locator("li, a, span, strong, h4, h5")
+            try:
+                scheme_count = scheme_elements.count()
+            except Exception as e:
+                logger.debug(f"[DISCOVERY] Failed to enumerate schemes for {section_name}: {e}")
+                scheme_count = 0
+
+            extracted = 0
+            for scheme_index in range(scheme_count):
                 try:
-                    strongs = card.locator("strong")
-                    if strongs.count() > 0:
-                        name = _clean_text(strongs.first.inner_text())
+                    text = _clean_text(scheme_elements.nth(scheme_index).inner_text())
+                    if _add_scheme(text, section_name):
+                        extracted += 1
                 except Exception:
-                    name = ""
+                    continue
 
-                if not name:
-                    text = card.inner_text()
-                    lines = [line.strip() for line in text.splitlines() if line.strip()]
-                    name = lines[0] if lines else ""
+            logger.info(f"[DISCOVERY] Extracted {extracted} schemes from {section_name}")
 
-                if _add_scheme(name):
-                    schemes[-1]["eligibility"] = f"From {option_label}"
-                    extracted += 1
-            except Exception:
-                continue
-
-        processed_options += 1
-        logger.info(f"[DISCOVERY] Extracted {extracted} schemes for scheme option {option_label}")
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {index + 1}: {e}")
+            continue
 
     schemes = _deduplicate(schemes)
-    logger.info(
-        f"[DISCOVERY] Filter workflow processed {processed_options} scheme options and extracted {len(schemes)} schemes"
-    )
+    logger.info(f"[DISCOVERY] Accordion schemes extracted: {len(schemes)}")
     return schemes
 
 
