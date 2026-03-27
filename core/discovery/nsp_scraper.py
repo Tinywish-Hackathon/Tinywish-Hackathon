@@ -543,7 +543,8 @@ def _navigate_to_schemes(page):
 
     try:
         page.goto(target_url, wait_until="networkidle")
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_load_state("networkidle")
     except Exception as e:
         logger.error(f"[NAV] Direct navigation failed: {e}")
         return False
@@ -553,19 +554,24 @@ def _navigate_to_schemes(page):
         return False
 
     try:
-        has_title = page.get_by_text("Schemes On NSP").count() > 0
-    except Exception:
-        has_title = False
-
-    try:
-        has_accordion = page.locator(".accordion-item, [data-bs-toggle='collapse']").count() > 0
-    except Exception:
-        has_accordion = False
-
-    if not has_title and not has_accordion:
-        logger.error("[NAV] Schemes page did not expose expected content")
+        page.wait_for_selector("text=Schemes On NSP", timeout=10000)
+    except Exception as e:
+        logger.error(f"[NAV] Schemes On NSP title not found: {e}")
         return False
 
+    try:
+        selects = page.locator("select")
+        if selects.count() < 3:
+            logger.error("[NAV] Expected filter dropdowns were not found")
+            return False
+
+        for index in range(3):
+            selects.nth(index).wait_for(state="visible", timeout=10000)
+    except Exception as e:
+        logger.error(f"[NAV] Filter dropdowns are not interactable: {e}")
+        return False
+
+    page.wait_for_timeout(1000)
     print("[NAV] Direct navigation to schemes page successful")
     logger.info("[NAV] Direct navigation to schemes page successful")
     return True
