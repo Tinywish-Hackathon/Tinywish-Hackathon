@@ -128,58 +128,85 @@ def _check_course(profile, text):
 
 
 def find_eligible_schemes(profile, schemes):
-    """Find schemes matching the user profile.
-
-    Args:
-        profile: Dict with keys: state, category, annual_income, course_level.
-        schemes: List of dicts with keys: name, eligibility.
-
-    Returns:
-        List of eligible scheme dicts with match_score and match_reasons.
-    """
+    """Find schemes matching the user profile using scheme-name heuristics."""
     _validate_profile(profile)
+
+    state_name = str(profile.get("state", "")).lower()
+    category = str(profile.get("category", "")).lower()
+    course_level = str(profile.get("course_level", "")).lower()
+
+    category_terms = {
+        "obc": ["obc", "backward", "ebc", "dnt"],
+        "sc": ["sc", "scheduled caste"],
+        "st": ["st", "scheduled tribe"],
+        "general": ["general", "all india", "national"],
+    }.get(category, [category])
+
+    if course_level in {"undergraduate", "ug", "graduation", "graduate"}:
+        course_terms = ["post matric", "post-matric", "graduation", "undergraduate"]
+    else:
+        course_terms = _COURSE_MAP.get(course_level, [course_level])
+
+    target_state_terms = ["jammu", "kashmir", "j&k"]
+    known_state_terms = [
+        "andhra", "arunachal", "assam", "bihar", "chandigarh", "chhattisgarh",
+        "dadra", "daman", "delhi", "goa", "gujarat", "haryana", "himachal",
+        "jharkhand", "karnataka", "kerala", "ladakh", "lakshadweep", "madhya",
+        "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland", "odisha",
+        "orissa", "punjab", "rajasthan", "sikkim", "tamil", "telangana",
+        "tripura", "uttar", "uttarakhand", "bengal", "west bengal", "puducherry",
+        "pondicherry", "state", "union territory",
+    ]
+
+    def _normalize_name(scheme):
+        return str(scheme.get("name", "")).strip()
+
+    def _is_generic_or_all_india(name_text):
+        if "all india" in name_text or "national" in name_text:
+            return True
+        return not any(term in name_text for term in known_state_terms)
 
     results = []
 
     for scheme in schemes:
-        text = scheme.get("eligibility", "").lower()
-        name = scheme.get("name", "Unknown")
-
-        # Run all four checks
-        state_match = _check_state(profile, text)
-        category_match = _check_category(profile, text)
-        income_match = _check_income(profile, text)
-        course_match = _check_course(profile, text)
-
-        # Eligibility gate: must match state OR category
-        eligible = state_match or category_match
-
-        if not eligible:
+        name = _normalize_name(scheme)
+        if not name:
             continue
 
-        # Compute match score
+        lowered_name = name.lower()
+
+        category_match = any(term in lowered_name for term in category_terms if term)
+        state_match = any(term in lowered_name for term in target_state_terms)
+        if not state_match and (
+            "jammu" in state_name or "kashmir" in state_name or "j&k" in state_name
+        ):
+            state_match = _is_generic_or_all_india(lowered_name)
+
+        course_match = any(term in lowered_name for term in course_terms if term)
+
+        if not (category_match or state_match):
+            continue
+
         score = 0
         reasons = []
 
-        if state_match:
-            score += 2
-            reasons.append("state")
         if category_match:
             score += 2
             reasons.append("category")
-        if income_match:
-            score += 1
-            reasons.append("income")
+        if state_match:
+            score += 2
+            reasons.append("state")
         if course_match:
             score += 1
             reasons.append("course")
 
         results.append({
             "name": name,
-            "eligibility": scheme.get("eligibility", ""),
             "match_score": score,
             "match_reasons": reasons,
         })
+
+    results.sort(key=lambda item: (-item["match_score"], item["name"].lower()))
 
     logger.info(
         f"[DISCOVERY] Eligibility check: {len(results)} eligible "

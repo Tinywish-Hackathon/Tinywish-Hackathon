@@ -155,96 +155,11 @@ def parse_tinyfish_result(result):
 
 
 def try_tinyfish():
-    """Use TinyFish as a reasoning layer for scholarship recommendations."""
-    try:
-        from tinyfish import TinyFish  # noqa: F401
-    except ImportError:
-        logger.info("[DISCOVERY] TinyFish not installed - skipping AI strategy")
-        return None
-
-    try:
-        client = get_tinyfish_client()
-    except ValueError as e:
-        logger.warning(f"[DISCOVERY] TinyFish unavailable: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"[DISCOVERY] TinyFish client init failed: {e}")
-        return None
-
-    print("[DISCOVERY] TinyFish used for intelligent recommendations")
-    logger.info("[DISCOVERY] TinyFish used for intelligent recommendations")
-
-    profile = {
-        "state": "Unknown",
-        "category": "Unknown",
-        "income": "Unknown",
-        "course": "Unknown",
-    }
-    try:
-        with open(PROFILE_PATH, "r", encoding="utf-8") as profile_file:
-            raw_profile = json.load(profile_file)
-        profile["state"] = raw_profile.get("state", profile["state"])
-        profile["category"] = raw_profile.get("category", profile["category"])
-        profile["income"] = raw_profile.get("annual_income", profile["income"])
-        profile["course"] = raw_profile.get("course_level", profile["course"])
-    except Exception as e:
-        logger.warning(f"[DISCOVERY] TinyFish profile load failed: {e}")
-
-    prompt = f"""
-Given this user profile:
-- State: {profile['state']}
-- Category: {profile['category']}
-- Income: {profile['income']}
-- Course: {profile['course']}
-
-Suggest relevant scholarship schemes from India's National Scholarship Portal.
-
-Return JSON:
-[
-  {{
-    "name": "...",
-    "reason": "...",
-    "priority": 1-5
-  }}
-]
-"""
-
-    print(dir(client.agent))
-
-    attempts = [
-        ("client.agent.run", lambda: client.agent.run(url="https://scholarships.gov.in", goal=str(prompt))),
-        ("client.agent", lambda: client.agent(prompt=prompt)),
-        ("client.run", lambda: client.run(prompt=prompt)),
-    ]
-
-    last_error = None
-    for label, attempt in attempts:
-        try:
-            logger.info(f"[DISCOVERY] TinyFish attempting {label}")
-            response = attempt()
-            payload = response
-            if hasattr(response, "data") and response.data:
-                payload = response.data
-            elif hasattr(response, "output") and response.output:
-                payload = response.output
-            normalized = parse_tinyfish_result(payload)
-            if normalized:
-                logger.info("[DISCOVERY] TinyFish success")
-                return normalized
-            logger.warning("[DISCOVERY] TinyFish returned no usable data")
-            return None
-        except Exception as e:
-            last_error = e
-            logger.warning(f"[DISCOVERY] TinyFish {label} failed: {e}")
-
-    if last_error:
-        logger.error(f"[DISCOVERY] TinyFish failed: {last_error}")
     return None
 
 
 def _try_tinyfish():
-    """Backward-compatible wrapper for TinyFish discovery."""
-    return try_tinyfish()
+    return None
 
 
 # ─────────────────────────────────────────────────
@@ -296,123 +211,186 @@ def _set_max_entries(page):
 
 
 def _extract_schemes_accordion(page):
-    """Extract scheme names from expanded NSP accordion sections."""
-    schemes = []
-    seen = set()
+    """Scrape NSP schemes from the Select Scheme filter + accordion UI."""
+    ignore_texts = {"search", "select scheme", "click here", "view details"}
 
     def _clean_text(value):
-        return " ".join(str(value).split()).strip()
+        return " ".join(str(value or "").split()).strip()
 
-    def _add_scheme(name, source_label):
-        cleaned = _clean_text(name)
-        if len(cleaned) <= 10:
-            return False
-        lowered = cleaned.lower()
-        if lowered in seen:
-            return False
-        if lowered.startswith("scheme open from") or lowered.startswith("click here"):
-            return False
-        seen.add(lowered)
-        schemes.append({
-            "name": cleaned,
-            "eligibility": f"Extracted from {source_label}",
-        })
-        return True
-
-    def _extract_title(content):
-        selectors = ("strong", "h4", "h5", "a", "li", "span")
-        for selector in selectors:
-            try:
-                items = content.locator(selector)
-                count = items.count()
-            except Exception:
-                continue
-
-            for index in range(count):
-                try:
-                    text = _clean_text(items.nth(index).inner_text())
-                    if len(text) > 10:
-                        return text
-                except Exception:
-                    continue
-        return ""
-
-    try:
-        selected = page.locator("select").nth(0).locator("option:checked").first.inner_text()
-        source_label = _clean_text(selected) or "NSP accordion"
-    except Exception:
-        source_label = "NSP accordion"
-
-    headers = page.locator('[data-bs-toggle="collapse"]')
-    try:
-        header_count = headers.count()
-    except Exception as e:
-        logger.error(f"[DISCOVERY] Failed to locate accordion headers: {e}")
-        return []
-
-    logger.info(f"[DISCOVERY] Accordion sections found: {header_count}")
-
-    for header_index in range(header_count):
+    def _wait_after_action():
         try:
-            headers = page.locator('[data-bs-toggle="collapse"]')
-            if header_index >= headers.count():
-                break
+            page.wait_for_load_state("networkidle")
+        except Exception:
+            logger.debug("[DISCOVERY] networkidle wait timed out")
+        page.wait_for_timeout(1000)
 
-            header = headers.nth(header_index)
+    def _click_search(form):
+        for _ in range(2):
             try:
-                header.scroll_into_view_if_needed()
-                page.wait_for_timeout(300)
+                search_btn = form.get_by_role("button", name="Search")
+                if search_btn.count() > 0:
+                    search_btn.first.click(force=True)
+                    _wait_after_action()
+                    return True
             except Exception:
                 pass
 
             try:
-                if not header.is_visible():
-                    continue
+                submit_btn = form.locator('button[type="submit"]')
+                if submit_btn.count() > 0:
+                    submit_btn.first.click(force=True)
+                    _wait_after_action()
+                    return True
             except Exception:
-                continue
+                pass
 
-            target = header.get_attribute("data-bs-target")
-            if not target:
-                continue
+            page.wait_for_timeout(500)
 
-            try:
-                header.click(force=True)
-                page.wait_for_timeout(1500)
-            except Exception as e:
-                logger.debug(f"[DISCOVERY] Accordion click failed at index {header_index}: {e}")
-                continue
+        return False
 
-            content = page.locator(target)
-            try:
-                content.wait_for(state="visible", timeout=5000)
-            except Exception as e:
-                logger.debug(f"[DISCOVERY] Accordion content wait failed for {target}: {e}")
-                continue
+    def _extract_for_select_index(select_index):
+        local_schemes = []
 
-            title = _extract_title(content)
-            if title:
-                _add_scheme(title, source_label)
+        def _add_local(name):
+            cleaned = _clean_text(name)
+            if len(cleaned) <= 5:
+                return
+            lowered = cleaned.lower()
+            if lowered in ignore_texts or lowered.startswith("scheme open from"):
+                return
+            local_schemes.append({
+                "name": cleaned,
+                "eligibility": "Extracted from page or fallback: NSP scheme",
+            })
 
-            try:
-                nested = content.locator("li, a, span, strong, h4, h5")
-                nested_count = nested.count()
-            except Exception:
-                nested_count = 0
-
-            for nested_index in range(nested_count):
-                try:
-                    text = _clean_text(nested.nth(nested_index).inner_text())
-                    _add_scheme(text, source_label)
-                except Exception:
-                    continue
-
+        try:
+            scheme_select = page.locator("select").nth(select_index)
+            scheme_select.wait_for(state="visible", timeout=10000)
+            options = scheme_select.locator("option")
+            option_count = options.count()
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {header_index + 1}: {e}")
-            continue
+            logger.debug(f"[DISCOVERY] Scheme dropdown at index {select_index} unavailable: {e}")
+            return []
 
-    schemes = _deduplicate(schemes)
-    logger.info(f"[DISCOVERY] Accordion schemes extracted: {len(schemes)}")
+        for option_index in range(1, option_count):
+            try:
+                scheme_select = page.locator("select").nth(select_index)
+                form = scheme_select.locator("xpath=ancestor::form[1]")
+                options = scheme_select.locator("option")
+                if option_index >= options.count():
+                    break
+
+                option_label = _clean_text(options.nth(option_index).inner_text())
+                if not option_label or option_label.lower() in {"select scheme", "select"}:
+                    continue
+
+                scheme_select.scroll_into_view_if_needed()
+                scheme_select.select_option(label=option_label)
+                page.wait_for_timeout(1000)
+
+                if not _click_search(form):
+                    logger.debug(f"[DISCOVERY] Search failed for option '{option_label}'")
+                    continue
+
+                try:
+                    headers = page.locator('[data-bs-toggle="collapse"]')
+                    header_count = headers.count()
+                except Exception as e:
+                    logger.debug(
+                        f"[DISCOVERY] Failed to find accordion headers for '{option_label}': {e}"
+                    )
+                    continue
+
+                for header_index in range(header_count):
+                    try:
+                        headers = page.locator('[data-bs-toggle="collapse"]')
+                        if header_index >= headers.count():
+                            break
+
+                        header = headers.nth(header_index)
+                        if not header.is_visible():
+                            continue
+
+                        header.scroll_into_view_if_needed()
+                        target = header.get_attribute("data-bs-target")
+                        if not target:
+                            continue
+
+                        header.click(force=True)
+                        page.wait_for_timeout(1000)
+
+                        content = page.locator(target)
+                        try:
+                            content.wait_for(state="visible", timeout=5000)
+                        except Exception:
+                            page.wait_for_timeout(1000)
+
+                        try:
+                            nodes = content.locator("strong, h4, h5, a, li, span, p, div")
+                            node_count = nodes.count()
+                        except Exception:
+                            node_count = 0
+
+                        for node_index in range(node_count):
+                            try:
+                                node = nodes.nth(node_index)
+                                if not node.is_visible():
+                                    continue
+                                _add_local(node.inner_text())
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        logger.debug(
+                            f"[DISCOVERY] Accordion extraction failed at header {header_index + 1} "
+                            f"for '{option_label}': {e}"
+                        )
+                        continue
+            except Exception as e:
+                logger.debug(f"[DISCOVERY] Scheme option loop failed at index {option_index}: {e}")
+                continue
+
+        return local_schemes
+
+    try:
+        page.goto("https://scholarships.gov.in/All-Scholarships")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1000)
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Failed to open All-Scholarships page: {e}")
+        return []
+
+    schemes = _extract_for_select_index(0)
+    if not schemes:
+        schemes = _extract_for_select_index(1)
+
+    schemes = list({s["name"]: s for s in schemes}.values())
+    logger.info(f"[DISCOVERY] Extracted {len(schemes)} schemes")
     return schemes
+
+
+def _try_playwright():
+    """Run the Playwright discovery path and return extracted schemes."""
+    from playwright.sync_api import sync_playwright
+
+    schemes = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            page = context.new_page()
+            page.set_default_timeout(30000)
+
+            if not _navigate_to_schemes(page):
+                browser.close()
+                return []
+
+            schemes = _extract_schemes_accordion(page)
+            browser.close()
+    except Exception as e:
+        logger.error(f"[DISCOVERY] Playwright scrape failed: {e}")
+
+    return schemes
+
 
 
 def _extract_schemes_from_page(page):
@@ -473,42 +451,8 @@ def safe_click_fuzzy(page, candidates, blocklist=None):
 
 
 def _navigate_to_schemes(page):
-    """Navigate directly to the NSP All-Scholarships page."""
-    target_url = "https://scholarships.gov.in/All-Scholarships"
-
-    try:
-        page.goto(target_url, wait_until="networkidle")
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_load_state("networkidle")
-    except Exception as e:
-        logger.error(f"[NAV] Direct navigation failed: {e}")
-        return False
-
-    if "All-Scholarships" not in page.url:
-        logger.error(f"[NAV] Unexpected URL after direct navigation: {page.url}")
-        return False
-
-    try:
-        page.wait_for_selector("text=Schemes On NSP", timeout=10000)
-    except Exception as e:
-        logger.error(f"[NAV] Schemes On NSP title not found: {e}")
-        return False
-
-    try:
-        selects = page.locator("select")
-        if selects.count() < 3:
-            logger.error("[NAV] Expected filter dropdowns were not found")
-            return False
-
-        for index in range(3):
-            selects.nth(index).wait_for(state="visible", timeout=10000)
-    except Exception as e:
-        logger.error(f"[NAV] Filter dropdowns are not interactable: {e}")
-        return False
-
-    page.wait_for_timeout(1000)
-    print("[NAV] Direct navigation to schemes page successful")
-    logger.info("[NAV] Direct navigation to schemes page successful")
+    page.goto("https://scholarships.gov.in/All-Scholarships")
+    page.wait_for_load_state("networkidle")
     return True
 
 
@@ -641,35 +585,7 @@ def extract_schemes(page):
 
 def _scrape_schemes_playwright():
     """Scrape schemes using Playwright with intent-safe navigation."""
-    from playwright.sync_api import sync_playwright
-
-    all_schemes = []
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-            page.set_default_timeout(30000)
-
-            page.goto(_HOMEPAGE_URL)
-
-            if not navigate_to_schemes(page):
-                print("[ERROR] Navigation failed")
-                logger.error("[DISCOVERY] Failed to reach schemes page")
-                browser.close()
-                return []
-
-            all_schemes = extract_schemes(page)
-
-            browser.close()
-
-    except Exception as e:
-        logger.error(f"[DISCOVERY] Playwright scrape failed: {e}")
-        if all_schemes:
-            logger.info(f"[DISCOVERY] Returning {len(all_schemes)} partial results")
-
-    return all_schemes
+    return _try_playwright()
 
 
 # ─────────────────────────────────────────────────
