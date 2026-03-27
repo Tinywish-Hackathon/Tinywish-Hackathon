@@ -383,10 +383,34 @@ def _extract_schemes_accordion(page):
     form = scheme_select.locator("xpath=ancestor::form")
 
     try:
+        search_btn = form.get_by_role("button", name="Search")
+    except Exception:
+        search_btn = None
+
+    try:
+        state_select.click()
+        page.wait_for_timeout(300)
         state_select.select_option(label="UT of Jammu and Kashmir")
         page.wait_for_timeout(1000)
     except Exception as e:
         logger.warning(f"[DISCOVERY] Could not select state filter: {e}")
+
+    try:
+        if search_btn is not None and search_btn.count() > 0:
+            search_btn.click()
+        else:
+            form.locator('button[type="submit"]').click()
+    except Exception as e:
+        try:
+            form.locator('button[type="submit"]').click()
+        except Exception as submit_error:
+            logger.warning(
+                f"[DISCOVERY] Initial state-filter search failed: {e}; fallback failed: {submit_error}"
+            )
+            return []
+
+    page.wait_for_timeout(2000)
+    _wait_for_results()
 
     try:
         options = scheme_select.locator("option")
