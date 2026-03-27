@@ -380,6 +380,7 @@ def _extract_schemes_accordion(page):
     scheme_type_select = selects.nth(0)
     ministry_select = selects.nth(1)
     state_select = selects.nth(2)
+    form = ministry_select.locator("xpath=ancestor::form")
 
     try:
         scheme_type_select.select_option(label="Central Sector Schemes")
@@ -422,10 +423,16 @@ def _extract_schemes_accordion(page):
             continue
 
         try:
-            page.get_by_role("button", name="Search").click()
+            search_btn = form.get_by_role("button", name="Search")
+            search_btn.click()
         except Exception as e:
-            logger.debug(f"[DISCOVERY] Search click failed for {option_label}: {e}")
-            continue
+            try:
+                form.locator('button[type="submit"]').click()
+            except Exception as submit_error:
+                logger.debug(
+                    f"[DISCOVERY] Search click failed for {option_label}: {e}; fallback failed: {submit_error}"
+                )
+                continue
 
         _wait_for_results()
         extracted = _extract_cards()
