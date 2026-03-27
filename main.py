@@ -1,5 +1,6 @@
 import sys
 import argparse
+import json
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
 from executor.actions import (
@@ -30,6 +31,7 @@ def wait(msg):
 
 def run_discovery():
     """Run scheme discovery mode: scrape → match → rank → display."""
+    from core.application_agent import run_tinyfish_application_agent
     from core.discovery.nsp_scraper import get_nsp_schemes
     from core.discovery.eligibility import find_eligible_schemes
     from core.discovery.ranking import rank_schemes, format_ranked_output
@@ -65,8 +67,12 @@ def run_discovery():
                 selected = ranked[n - 1]
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
-                # TODO: pass selected["name"] into flow engine
-                # main_flow(selected_scheme=selected["name"])
+                try:
+                    application_result = run_tinyfish_application_agent(selected["name"])
+                    print(json.dumps(application_result, indent=2, ensure_ascii=False))
+                except Exception as e:
+                    logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
+                    print("Application agent failed. Check logs for details.")
                 return
             else:
                 print(f"Please enter a number between 1 and {len(ranked)}")
