@@ -411,54 +411,164 @@ def _set_max_entries(page):
     return False
 
 
-def _extract_schemes_from_page(page):
-    """Extract scheme data from visible table body rows on the current page."""
+def _extract_schemes_accordion(page):
+    """Extract scheme data from accordion-based ministry sections."""
     schemes = []
+    seen = set()
+    max_sections = 30
+
+    def _text(locator):
+        try:
+            return (locator.inner_text() or "").strip()
+        except Exception:
+            return ""
+
+    def _add_scheme(name, ministry_name):
+        cleaned = " ".join(str(name).split()).strip(" -:\n\t")
+        if len(cleaned) < 4:
+            return
+
+        lowered = cleaned.lower()
+        blocked = ("ministry", "department", "council", "board", "commission")
+        if lowered in blocked:
+            return
+
+        if cleaned.lower() in seen:
+            return
+
+        seen.add(cleaned.lower())
+        schemes.append({
+            "name": cleaned,
+            "eligibility": f"Scheme under {ministry_name}",
+        })
+
+    section_entries = []
     try:
-        rows = page.locator("table tbody tr").all()
-        for row in rows:
+        accordion_items = page.locator(".accordion-item")
+        count = min(accordion_items.count(), max_sections)
+        for index in range(count):
             try:
-                cells = row.locator("td").all()
-                if len(cells) < 2:
-                    continue
-
-                texts = []
-                for cell in cells:
-                    try:
-                        t = cell.inner_text().strip()
-                        if t:
-                            texts.append(t)
-                    except Exception:
-                        continue
-
-                if not texts:
-                    continue
-
-                name = texts[0]
-                eligibility = " ".join(texts[1:]) if len(texts) > 1 else ""
-
-                # Skip header-like rows
-                if name.lower() in ("s.no", "s.no.", "sl.no", "sl.no.",
-                                     "scheme name", "name", "#"):
-                    continue
-
-                # If first column is a serial number, shift to next column
-                if name.replace(".", "").strip().isdigit() and len(texts) > 1:
-                    name = texts[1]
-                    eligibility = " ".join(texts[2:]) if len(texts) > 2 else ""
-
-                name = name.strip()
-                if name and len(name) > 3:
-                    schemes.append({
-                        "name": name,
-                        "eligibility": eligibility.strip(),
-                    })
+                item = accordion_items.nth(index)
+                if item.is_visible():
+                    section_entries.append(("item", index, item))
             except Exception:
                 continue
     except Exception as e:
-        logger.debug(f"[DISCOVERY] Row extraction error: {e}")
+        logger.debug(f"[DISCOVERY] Accordion item scan failed: {e}")
 
+    if not section_entries:
+        try:
+            toggles = page.locator("[data-bs-toggle='collapse']")
+            count = min(toggles.count(), max_sections)
+            for index in range(count):
+                section_entries.append(("toggle", index, toggles.nth(index)))
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Collapse toggle scan failed: {e}")
+
+    if not section_entries:
+        try:
+            text_headers = page.locator("text=/(Ministry|Department|Council|Board|Commission)/i")
+            count = min(text_headers.count(), max_sections)
+            for index in range(count):
+                section_entries.append(("text", index, text_headers.nth(index)))
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Text header scan failed: {e}")
+
+    logger.info(f"[DISCOVERY] Accordion sections found: {len(section_entries)}")
+
+    for entry_type, index, base_locator in section_entries[:max_sections]:
+        ministry_name = ""
+        header = None
+        section_root = base_locator
+
+        try:
+            if entry_type == "item":
+                section_root = base_locator
+                header_candidates = [
+                    section_root.locator("[data-bs-toggle='collapse']").first,
+                    section_root.locator(".accordion-button").first,
+                    section_root.get_by_role("button").first,
+                    section_root.locator("text=/(Ministry|Department|Council|Board|Commission)/i").first,
+                ]
+                for candidate in header_candidates:
+                    try:
+                        if candidate.count() > 0 and candidate.is_visible():
+                            header = candidate
+                            break
+                    except Exception:
+                        continue
+            else:
+                header = base_locator
+                try:
+                    section_root = base_locator.locator("xpath=ancestor::*[contains(@class,'accordion-item')][1]").first
+                except Exception:
+                    section_root = base_locator
+
+            if header is None:
+                continue
+
+            ministry_name = _text(header)
+            if not ministry_name:
+                ministry_name = f"Section {index + 1}"
+
+            expanded_before = False
+            try:
+                expanded_before = (header.get_attribute("aria-expanded") or "").lower() == "true"
+            except Exception:
+                expanded_before = False
+
+            try:
+                header.click(timeout=3000, force=False)
+                page.wait_for_timeout(800)
+            except Exception as e:
+                logger.debug(f"[DISCOVERY] Accordion click failed for {ministry_name}: {e}")
+                continue
+
+            scheme_locators = [
+                section_root.locator("a[href*='scheme']"),
+                section_root.locator(".scheme-name"),
+                section_root.locator(".collapse.show li"),
+            ]
+
+            section_count = 0
+            for scheme_locator in scheme_locators:
+                try:
+                    count = scheme_locator.count()
+                except Exception:
+                    continue
+
+                for scheme_index in range(count):
+                    try:
+                        scheme_name = _text(scheme_locator.nth(scheme_index))
+                        before = len(schemes)
+                        _add_scheme(scheme_name, ministry_name)
+                        if len(schemes) > before:
+                            section_count += 1
+                    except Exception:
+                        continue
+
+            logger.info(
+                f"[DISCOVERY] Extracted {section_count} schemes from accordion: {ministry_name}"
+            )
+
+            if not expanded_before:
+                try:
+                    header.click(timeout=2000, force=False)
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.debug(f"[DISCOVERY] Accordion extraction failed at section {index + 1}: {e}")
+            continue
+
+    logger.info(f"[DISCOVERY] Accordion schemes extracted: {len(schemes)}")
     return schemes
+
+
+def _extract_schemes_from_page(page):
+    """Backward-compatible wrapper for scheme extraction."""
+    return _extract_schemes_accordion(page)
 
 
 def _deduplicate(schemes):
@@ -580,67 +690,17 @@ def navigate_to_schemes(page):
 
 def extract_schemes(page):
     """Extract all schemes from the current NSP schemes page."""
-    all_schemes = []
-
     try:
-        page.wait_for_selector("table tbody tr", timeout=10000)
-        logger.info("[DISCOVERY] Table data loaded")
+        page.wait_for_load_state("networkidle")
     except Exception:
-        logger.warning("[DISCOVERY] Table rows not found after timeout")
+        logger.debug("[DISCOVERY] networkidle wait timed out before accordion extraction")
 
-    _set_max_entries(page)
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1000)
 
-    try:
-        page.wait_for_selector("table tbody tr", timeout=10000)
-    except Exception:
-        pass
-
-    page_num = 0
-    while page_num < _MAX_PAGES:
-        page_num += 1
-        logger.info(f"[DISCOVERY] Extracting page {page_num}...")
-
-        page_schemes = _extract_schemes_from_page(page)
-        logger.info(
-            f"[DISCOVERY] Extracted {len(page_schemes)} schemes "
-            f"from page {page_num}"
-        )
-
-        if page_schemes:
-            all_schemes.extend(page_schemes)
-
-        try:
-            next_btn = page.locator("li.paginate_button.next")
-            if next_btn.count() == 0:
-                logger.info("[DISCOVERY] No pagination found")
-                break
-
-            classes = (next_btn.first.get_attribute("class") or "").lower()
-            if "disabled" in classes:
-                logger.info("[DISCOVERY] No more pages (Next is disabled)")
-                break
-
-            next_link = next_btn.first.locator("a")
-            if next_link.count() > 0:
-                next_link.first.click()
-            else:
-                next_btn.first.click()
-
-            page.wait_for_timeout(1500)
-            try:
-                page.wait_for_selector("table tbody tr", timeout=10000)
-            except Exception:
-                logger.warning("[DISCOVERY] Table did not reload after pagination")
-                break
-
-        except Exception as e:
-            logger.debug(f"[DISCOVERY] Pagination error: {e}")
-            break
-
-    all_schemes = _deduplicate(all_schemes)
-    logger.info(f"[DISCOVERY] Total schemes collected: {len(all_schemes)}")
-    return all_schemes
+    schemes = _extract_schemes_accordion(page)
+    schemes = _deduplicate(schemes)
+    logger.info(f"[DISCOVERY] Total schemes collected: {len(schemes)}")
+    return schemes
 
 
 def _scrape_schemes_playwright():
