@@ -648,14 +648,22 @@ def _navigate_to_schemes(page):
         except Exception:
             text = ""
 
-        if "all-scholarships" in url or ("schemes" in url and page.locator("table").count() > 0):
+        if (
+            "all-scholarships" in url
+            or page.locator(".accordion-item").count() > 0
+            or page.locator("[data-bs-toggle='collapse']").count() > 0
+        ):
             print("[NAV] Reached schemes page")
             logger.info(f"[NAV] Reached schemes page: {page.url}")
             return True
 
         if any(token in url or token in text for token in target):
             try:
-                if page.locator("table").count() > 0:
+                if (
+                    page.locator(".accordion-item").count() > 0
+                    or page.locator("[data-bs-toggle='collapse']").count() > 0
+                    or page.locator("text=/(Ministry|Department|Council|Board|Commission)/i").count() > 0
+                ):
                     print("[NAV] Reached schemes page")
                     logger.info(f"[NAV] Reached schemes page: {page.url}")
                     return True
@@ -744,9 +752,9 @@ def get_nsp_schemes(use_cache=True):
     """Get NSP scheme list using layered strategy.
 
     Strategy order:
-      1. TinyFish AI agent (primary)
-      2. Playwright browser (fallback)
-      3. Cache (last-resort safety net)
+      1. Cache
+      2. TinyFish AI agent (primary live strategy)
+      3. Playwright browser (fallback)
 
     Args:
         use_cache: If True, load from cache file if it exists.
@@ -756,23 +764,22 @@ def get_nsp_schemes(use_cache=True):
     """
     global _FORCE_REFRESH
 
+    if use_cache and not _FORCE_REFRESH:
+        cached = _load_cache()
+        if cached:
+            logger.info(f"[DISCOVERY] Loaded {len(cached)} schemes from cache")
+            return cached
+
     logger.info("[DISCOVERY] Starting fresh scheme extraction...")
 
-    # Layer 1: TinyFish (primary)
+    # Layer 2: TinyFish (primary live strategy)
     schemes = try_tinyfish()
 
-    # Layer 2: Playwright (fallback)
+    # Layer 3: Playwright (fallback)
     if not schemes:
         print("[DISCOVERY] Falling back to Playwright...")
         logger.info("[DISCOVERY] Falling back to Playwright...")
         schemes = _scrape_schemes_playwright()
-
-    # Layer 3: Cache safety net
-    if not schemes and use_cache and not _FORCE_REFRESH:
-        cached = _load_cache()
-        if cached:
-            logger.info(f"[DISCOVERY] Loaded {len(cached)} schemes from cache")
-            schemes = cached
 
     # Save to cache
     if schemes:
