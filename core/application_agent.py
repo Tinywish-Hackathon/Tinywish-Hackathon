@@ -194,7 +194,6 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
     )
 
     final_payload = None
-    last_valid_json = None
     last_parsed_data = None
 
     try:
@@ -203,12 +202,13 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
                 parsed_data = raw_data
                 try:
                     parsed_data = json.loads(raw_data)
-                except json.JSONDecodeError:
+                except Exception:
                     pass
 
                 last_parsed_data = parsed_data
 
                 logger.info(f"[APPLICATION] TinyFish event: {event_name}")
+                logger.info(f"[APPLICATION] Event type: {event_name}")
 
                 if isinstance(parsed_data, dict):
                     log_text = (
@@ -220,16 +220,13 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
                     if log_text:
                         logger.info(f"[APPLICATION] {log_text}")
 
-                if isinstance(parsed_data, dict):
-                    if parsed_data.get("type") in ["STARTED", "STEP", "MESSAGE"]:
-                        continue
+                if event_name in ["completed", "result"]:
+                    final_payload = parsed_data
+                elif event_name == "message":
+                    pass
 
-                    if any(key in parsed_data for key in ["steps", "documents", "apply_link"]):
-                        last_valid_json = parsed_data
-
-            if last_valid_json:
-                final_payload = last_valid_json
-            if final_payload is None:
+            if not final_payload:
+                logger.warning("No final result event found, using last parsed data")
                 final_payload = last_parsed_data
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
