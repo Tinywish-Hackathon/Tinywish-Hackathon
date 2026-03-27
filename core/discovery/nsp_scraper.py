@@ -624,71 +624,52 @@ def safe_click_fuzzy(page, candidates, blocklist=None):
 
 
 def _navigate_to_schemes(page):
-    """Navigate from homepage to the schemes page using iterative safe clicks."""
-    target = ["schemes", "all scholarships"]
-    block = ["login", "apply", "otr", "register", "sign in"]
-    actions = ["schemes on nsp", "schemes", "students"]
-
+    """Navigate from homepage to All-Scholarships via Students → Schemes on NSP."""
     logger.info("[DISCOVERY] Navigating via homepage to schemes page")
     page.goto(_HOMEPAGE_URL)
+    try:
+        page.wait_for_load_state("networkidle")
+    except Exception:
+        logger.debug("[NAV] networkidle wait timed out on homepage")
 
-    for step in range(5):
-        print(f"[NAV] Step {step + 1}: {page.url}")
-        logger.info(f"[NAV] Step {step + 1}: {page.url}")
-
-        try:
-            page.wait_for_load_state("networkidle")
-        except Exception:
-            logger.debug("[NAV] networkidle wait timed out; continuing")
-        page.wait_for_timeout(1500)
-
-        url = page.url.lower()
-        try:
-            text = page.inner_text("body").lower()
-        except Exception:
-            text = ""
-
-        if (
-            "all-scholarships" in url
-            or page.locator(".accordion-item").count() > 0
-            or page.locator("[data-bs-toggle='collapse']").count() > 0
-        ):
-            print("[NAV] Reached schemes page")
-            logger.info(f"[NAV] Reached schemes page: {page.url}")
-            return True
-
-        if any(token in url or token in text for token in target):
+    def _click(label, fallback):
+        selectors = [
+            (lambda: page.get_by_text(label)),
+            (lambda: page.locator(f"text={label}")),
+            (lambda: page.locator(f"text={fallback}")),
+        ]
+        for selector in selectors:
             try:
-                if (
-                    page.locator(".accordion-item").count() > 0
-                    or page.locator("[data-bs-toggle='collapse']").count() > 0
-                    or page.locator("text=/(Ministry|Department|Council|Board|Commission)/i").count() > 0
-                ):
-                    print("[NAV] Reached schemes page")
-                    logger.info(f"[NAV] Reached schemes page: {page.url}")
-                    return True
-            except Exception:
-                pass
+                locator = selector()
+                if locator.count() == 0:
+                    continue
+                locator.first.click()
+                page.wait_for_load_state("networkidle")
+                page.wait_for_timeout(1000)
+                print(f"[NAV] Clicked {label}")
+                logger.info(f"[NAV] Clicked {label}")
+                return True
+            except Exception as e:
+                logger.debug(f"[NAV] Click attempt for {label} failed: {e}")
+        return False
 
-        clicked = False
-        for action in actions:
-            if any(blocked in action for blocked in block):
-                continue
+    if not _click("Students", "Students"):
+        logger.error("[NAV] Unable to click Students")
+        return False
 
-            if safe_click_fuzzy(page, [action], block):
-                print(f"[NAV] Clicked: {action}")
-                logger.info(f"[NAV] Clicked: {action}")
-                clicked = True
-                break
+    if not _click("Schemes on NSP", "Schemes"):
+        logger.error("[NAV] Unable to click Schemes on NSP")
+        return False
 
-        if not clicked:
-            print("[NAV] No valid action found")
-            logger.error("[NAV] No valid action found")
-            return False
+    final_url = page.url
+    print(f"[NAV] Final URL: {final_url}")
+    logger.info(f"[NAV] Final URL: {final_url}")
 
-    print("[NAV] Max steps reached")
-    logger.error("[NAV] Max steps reached")
-    return False
+    if "All-Scholarships" not in final_url:
+        logger.error("[NAV] All-Scholarships not found in URL after navigation")
+        return False
+
+    return True
 
 
 def navigate_to_schemes(page):
