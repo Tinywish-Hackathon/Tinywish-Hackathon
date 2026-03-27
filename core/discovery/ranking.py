@@ -145,11 +145,8 @@ def _tinyfish_rank(profile, schemes):
 
     prompt = _build_tinyfish_prompt(profile, scheme_payload)
     client = get_tinyfish_client()
-    logger.info("[RANKING] Using TinyFish LLM")
-    response = client.complete(
-        prompt=prompt,
-        max_tokens=1000,
-    )
+    logger.info("[RANKING] Using TinyFish via client.run")
+    response = client.run(prompt=prompt)
     ranked = _parse_tinyfish_ranking_response(response)
     if ranked:
         return ranked
