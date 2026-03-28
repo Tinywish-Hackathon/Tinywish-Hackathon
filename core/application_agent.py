@@ -165,10 +165,21 @@ def _parse_application_result(result, scheme_name):
     return parsed or default
 
 
-def _build_goal(scheme_name):
+def _build_goal(scheme_name, profile=None):
+    profile = profile or {}
+    name = profile.get("full_name") or profile.get("name") or "Atharv"
+    state = profile.get("state") or "J&K"
+    category = profile.get("category") or "OBC"
+    income = profile.get("annual_income") or profile.get("income") or 250000
+
     return (
         "You are an autonomous web agent helping a student apply for a scholarship.\n\n"
         f"Target scholarship: {scheme_name}\n\n"
+        "Student profile for fill simulation:\n"
+        f"- Name: {name}\n"
+        f"- State: {state}\n"
+        f"- Category: {category}\n"
+        f"- Income: {income}\n\n"
         "Goal:\n"
         "Navigate to the official application page and extract:\n"
         "1. Direct apply link\n"
@@ -180,6 +191,7 @@ def _build_goal(scheme_name):
         "- Avoid blogs unless necessary\n"
         "- If login is required, still extract form structure if visible\n"
         "- Try to reach the application form and identify fields\n"
+        "- If the form is visible, simulate filling it with the student profile but do not submit\n"
         "- Handle redirects, login pages, and dynamic UI\n\n"
         "Return ONLY JSON:\n"
         "{\n"
@@ -192,7 +204,7 @@ def _build_goal(scheme_name):
     )
 
 
-def run_tinyfish_application_agent(scheme_name, api_key=None):
+def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
     """Run TinyFish automation for a selected scholarship scheme."""
     resolved_api_key = api_key or os.getenv("TINYFISH_API_KEY")
     if not resolved_api_key:
@@ -200,7 +212,7 @@ def run_tinyfish_application_agent(scheme_name, api_key=None):
 
     payload = {
         "url": "https://scholarships.gov.in/",
-        "goal": _build_goal(scheme_name),
+        "goal": _build_goal(scheme_name, profile=profile),
     }
 
     request_body = json.dumps(payload).encode("utf-8")

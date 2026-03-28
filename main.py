@@ -79,11 +79,10 @@ def run_discovery():
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
                 try:
-                    result = run_tinyfish_application_agent(selected["name"])
+                    result = run_tinyfish_application_agent(selected["name"], profile=profile)
 
-                    print("\n" + "=" * 80)
-                    print("APPLICATION DETAILS")
-                    print("=" * 80)
+                    print("\nAPPLICATION DETAILS")
+                    print("=" * 18)
                     print(f"Scheme: {selected['name']}")
                     print(f"Apply Link: {result['apply_link']}")
                     print(f"Form Detected: {result['form_detected']}")
@@ -100,10 +99,13 @@ def run_discovery():
                     for i, step in enumerate(result["steps"], 1):
                         print(f"{i}. {step}")
 
+                    if result["form_detected"]:
+                        print("\n[SUCCESS] Application form detected and ready for automation")
+
                     if not result["apply_link"]:
                         print("⚠️ Could not find direct apply link. Check portal manually.")
 
-                    print("=" * 80)
+                    print("=" * 18)
                 except Exception as e:
                     logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
                     print("Application agent failed. Check logs for details.")
