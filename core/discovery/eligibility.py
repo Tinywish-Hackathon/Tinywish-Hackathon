@@ -166,6 +166,19 @@ def find_eligible_schemes(profile, schemes):
             return True
         return not any(term in name_text for term in known_state_terms)
 
+    def _is_category_restricted(name_text):
+        restrictions = [
+            ("obc", ["only for obc", "obc only", "for obc", "other backward"]),
+            ("sc", ["only for sc", "sc only", "for sc", "scheduled caste"]),
+            ("st", ["only for st", "st only", "for st", "scheduled tribe"]),
+        ]
+        for restricted_category, keywords in restrictions:
+            if any(keyword in name_text for keyword in keywords):
+                return restricted_category
+        return None
+
+    merit_terms = ["merit", "open category", "general category", "income based", "means"]
+
     results = []
 
     for scheme in schemes:
@@ -174,6 +187,9 @@ def find_eligible_schemes(profile, schemes):
             continue
 
         lowered_name = name.lower()
+        restricted_category = _is_category_restricted(lowered_name)
+        if restricted_category and restricted_category != category:
+            continue
 
         category_match = any(term in lowered_name for term in category_terms if term)
         state_match = any(term in lowered_name for term in target_state_terms)
@@ -183,6 +199,12 @@ def find_eligible_schemes(profile, schemes):
             state_match = _is_generic_or_all_india(lowered_name)
 
         course_match = any(term in lowered_name for term in course_terms if term)
+        merit_match = any(term in lowered_name for term in merit_terms)
+
+        if category == "general" and restricted_category:
+            continue
+        if category == "general":
+            category_match = merit_match or "open" in lowered_name or "income" in lowered_name
 
         if not (category_match or state_match):
             continue
@@ -199,6 +221,8 @@ def find_eligible_schemes(profile, schemes):
         if course_match:
             score += 1
             reasons.append("course")
+        if merit_match and "merit" not in reasons:
+            reasons.append("merit/open")
 
         results.append({
             "name": name,
