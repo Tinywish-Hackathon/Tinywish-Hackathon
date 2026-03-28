@@ -223,7 +223,7 @@ def _detail_score(entry):
     return score
 
 
-def _is_similar_name(left, right, threshold=0.9):
+def _is_similar_name(left, right, threshold=0.85):
     left_key = left.strip().lower()
     right_key = right.strip().lower()
     if left_key == right_key:
