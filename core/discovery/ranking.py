@@ -13,9 +13,15 @@ _MAX_TINYFISH_INPUT = 20
 
 def _rule_based_rank(schemes, top_n=_TOP_N):
     """Fallback deterministic ranking based on existing match score."""
+    def _effective_score(scheme):
+        score = scheme.get("match_score", 0)
+        if scheme.get("source_type") == "private" and scheme.get("apply_link"):
+            score += 1
+        return score
+
     sorted_schemes = sorted(
         schemes,
-        key=lambda s: (-s.get("match_score", 0), s.get("name", "").lower())
+        key=lambda s: (-_effective_score(s), s.get("name", "").lower())
     )
     return sorted_schemes[:top_n]
 
@@ -115,7 +121,8 @@ def _build_tinyfish_prompt(profile, scheme_payload):
         "+2 state match\n"
         "+2 category match\n"
         "+1 income fit\n"
-        "+1 course match\n\n"
+        "+1 course match\n"
+        "+1 private scholarship if apply_link exists\n\n"
         "Schemes:\n"
         f"{schemes_json}\n\n"
         "Return ONLY JSON:\n"
@@ -139,6 +146,11 @@ def _tinyfish_rank(profile, schemes):
             "category": scheme.get("category", profile.get("category", "")),
             "income_limit": scheme.get("income_limit"),
             "course_level": scheme.get("course_level", profile.get("course_level", "")),
+            "provider": scheme.get("provider", ""),
+            "eligibility": scheme.get("eligibility", ""),
+            "apply_link": scheme.get("apply_link", ""),
+            "type": scheme.get("type", ""),
+            "source_type": scheme.get("source_type", ""),
         }
         for scheme in top_candidates
     ]
