@@ -35,9 +35,11 @@ def run_discovery():
     from core.discovery.multi_source import (
         merge_schemes,
         scrape_buddy4study,
-        scrape_careers360,
+        scrape_international_scholarships,
         scrape_myscheme,
         scrape_nsp,
+        scrape_scholarships360,
+        scrape_we_make_scholars,
     )
     from core.discovery.ranking import rank_schemes, format_ranked_output
 
@@ -48,7 +50,9 @@ def run_discovery():
         scrape_nsp(),
         scrape_myscheme(),
         scrape_buddy4study(),
-        scrape_careers360(),
+        scrape_we_make_scholars(),
+        scrape_scholarships360(),
+        scrape_international_scholarships(),
     ]
     schemes = merge_schemes(source_lists)
 
@@ -79,33 +83,7 @@ def run_discovery():
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
                 try:
-                    result = run_tinyfish_application_agent(selected["name"], profile=profile)
-
-                    print("\nAPPLICATION DETAILS")
-                    print("=" * 18)
-                    print(f"Scheme: {selected['name']}")
-                    print(f"Apply Link: {result['apply_link']}")
-                    print(f"Form Detected: {result['form_detected']}")
-
-                    print("\nForm Fields:")
-                    for field in result["fields"]:
-                        print(f"- {field}")
-
-                    print("\nRequired Documents:")
-                    for doc in result["documents"]:
-                        print(f"- {doc}")
-
-                    print("\nApplication Steps:")
-                    for i, step in enumerate(result["steps"], 1):
-                        print(f"{i}. {step}")
-
-                    if result["form_detected"]:
-                        print("\n[SUCCESS] Application form detected and ready for automation")
-
-                    if not result["apply_link"]:
-                        print("⚠️ Could not find direct apply link. Check portal manually.")
-
-                    print("=" * 18)
+                    run_tinyfish_application_agent(selected["name"], profile=profile)
                 except Exception as e:
                     logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
                     print("Application agent failed. Check logs for details.")

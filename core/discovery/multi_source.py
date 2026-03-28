@@ -3,7 +3,7 @@
 import html
 import re
 from difflib import SequenceMatcher
-from urllib import error, request
+from urllib import request
 
 from core.discovery.nsp_scraper import get_nsp_schemes
 from utils.logger import get_logger
@@ -19,6 +19,10 @@ _REQUEST_HEADERS = {
 
 _TITLE_PATTERN = re.compile(
     r"<(?:a|h1|h2|h3|h4)[^>]*>(.*?)</(?:a|h1|h2|h3|h4)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_ANCHOR_PATTERN = re.compile(
+    r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
     re.IGNORECASE | re.DOTALL,
 )
 _TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -98,7 +102,7 @@ def _infer_course_level(name):
     return ""
 
 
-def _normalize_scheme(name, source):
+def _normalize_government_scheme(name, source):
     cleaned_name = _clean_text(name)
     if len(cleaned_name) < 8:
         return None
@@ -114,6 +118,31 @@ def _normalize_scheme(name, source):
         "income_limit": _extract_income_limit(cleaned_name),
         "course_level": _infer_course_level(cleaned_name),
         "source": source,
+        "source_type": "government",
+    }
+
+
+def _normalize_private_scheme(name, provider, apply_link="", eligibility=""):
+    cleaned_name = _clean_text(name)
+    if len(cleaned_name) < 8:
+        return None
+
+    lowered = cleaned_name.lower()
+    if "scholarship" not in lowered and "grant" not in lowered and "fellowship" not in lowered:
+        return None
+
+    return {
+        "name": cleaned_name,
+        "provider": provider,
+        "eligibility": _clean_text(eligibility),
+        "apply_link": apply_link.strip(),
+        "type": "private",
+        "source": provider,
+        "source_type": "private",
+        "state": _infer_state(cleaned_name),
+        "category": _infer_category(cleaned_name),
+        "income_limit": _extract_income_limit(f"{cleaned_name} {eligibility}"),
+        "course_level": _infer_course_level(cleaned_name),
     }
 
 
@@ -122,11 +151,45 @@ def _extract_schemes_from_html(html_text, source):
     seen = set()
 
     for raw_title in _TITLE_PATTERN.findall(html_text):
-        normalized = _normalize_scheme(raw_title, source)
+        normalized = _normalize_government_scheme(raw_title, source)
         if not normalized:
             continue
 
         key = normalized["name"].strip().lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        schemes.append(normalized)
+
+    return schemes
+
+
+def _absolute_link(base_url, href):
+    href = (href or "").strip()
+    if not href:
+        return ""
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    if href.startswith("/"):
+        parts = base_url.split("/", 3)
+        if len(parts) >= 3:
+            return f"{parts[0]}//{parts[2]}{href}"
+    return ""
+
+
+def _extract_private_schemes_from_html(html_text, provider, base_url):
+    schemes = []
+    seen = set()
+
+    for href, anchor_html in _ANCHOR_PATTERN.findall(html_text):
+        title = _clean_text(anchor_html)
+        apply_link = _absolute_link(base_url, href)
+        normalized = _normalize_private_scheme(title, provider, apply_link=apply_link)
+        if not normalized:
+            continue
+
+        key = normalized["name"].lower()
         if key in seen:
             continue
 
@@ -142,8 +205,7 @@ def scrape_nsp():
     try:
         raw_schemes = get_nsp_schemes(use_cache=True)
         for scheme in raw_schemes:
-            name = scheme.get("name", "")
-            normalized = _normalize_scheme(name, "NSP")
+            normalized = _normalize_government_scheme(scheme.get("name", ""), "NSP")
             if normalized:
                 schemes.append(normalized)
     except Exception as e:
@@ -173,17 +235,16 @@ def scrape_myscheme():
 
 
 def scrape_buddy4study():
-    """Scrape scholarship names from Buddy4Study public pages."""
+    """Scrape private scholarships from Buddy4Study."""
     urls = [
         "https://www.buddy4study.com/scholarships",
-        "https://www.buddy4study.com/article/fully-funded-scholarships",
-        "https://www.buddy4study.com/article/buddy4study-scholarship-programme",
+        "https://www.buddy4study.com/article/scholarships-in-india",
     ]
     schemes = []
 
     for url in urls:
         try:
-            schemes.extend(_extract_schemes_from_html(_fetch_html(url), "Buddy4Study"))
+            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "Buddy4Study", url))
         except Exception as e:
             logger.warning(f"[DISCOVERY] Buddy4Study fetch failed for {url}: {e}")
 
@@ -192,29 +253,77 @@ def scrape_buddy4study():
     return schemes
 
 
-def scrape_careers360():
-    """Scrape scholarship names from Careers360 public scholarship pages."""
+def scrape_we_make_scholars():
+    """Scrape private scholarships from WeMakeScholars."""
     urls = [
-        "https://school.careers360.com/articles/scholarships-in-india",
-        "https://school.careers360.com/articles/state-scholarships",
-        "https://news.careers360.com/cbse-central-sector-scheme-of-scholarship-2025-applications-open-scholarships-gov-in-csss-application",
+        "https://www.wemakescholars.com/scholarships",
+        "https://www.wemakescholars.com/other-scholarships",
     ]
     schemes = []
 
     for url in urls:
         try:
-            schemes.extend(_extract_schemes_from_html(_fetch_html(url), "Careers360"))
+            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "WeMakeScholars", url))
         except Exception as e:
-            logger.warning(f"[DISCOVERY] Careers360 fetch failed for {url}: {e}")
+            logger.warning(f"[DISCOVERY] WeMakeScholars fetch failed for {url}: {e}")
 
     schemes = merge_schemes([schemes])
-    logger.info(f"[DISCOVERY] Careers360: {len(schemes)} schemes")
+    logger.info(f"[DISCOVERY] WeMakeScholars: {len(schemes)} schemes")
+    return schemes
+
+
+def scrape_scholarships360():
+    """Scrape private scholarships from Scholarships360."""
+    urls = [
+        "https://scholarships360.org/scholarships/",
+        "https://scholarships360.org/featured-scholarships/",
+    ]
+    schemes = []
+
+    for url in urls:
+        try:
+            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "Scholarships360", url))
+        except Exception as e:
+            logger.warning(f"[DISCOVERY] Scholarships360 fetch failed for {url}: {e}")
+
+    schemes = merge_schemes([schemes])
+    logger.info(f"[DISCOVERY] Scholarships360: {len(schemes)} schemes")
+    return schemes
+
+
+def scrape_international_scholarships():
+    """Scrape private scholarships from International Scholarships."""
+    urls = [
+        "https://www.internationalscholarships.com/scholarships",
+        "https://www.internationalscholarships.com/resources",
+    ]
+    schemes = []
+
+    for url in urls:
+        try:
+            schemes.extend(
+                _extract_private_schemes_from_html(_fetch_html(url), "International Scholarships", url)
+            )
+        except Exception as e:
+            logger.warning(f"[DISCOVERY] International Scholarships fetch failed for {url}: {e}")
+
+    schemes = merge_schemes([schemes])
+    logger.info(f"[DISCOVERY] International Scholarships: {len(schemes)} schemes")
     return schemes
 
 
 def _detail_score(entry):
     score = 0
-    for key in ("state", "category", "course_level", "source"):
+    for key in (
+        "state",
+        "category",
+        "course_level",
+        "source",
+        "provider",
+        "eligibility",
+        "apply_link",
+        "source_type",
+    ):
         if entry.get(key):
             score += 1
     if entry.get("income_limit") is not None:
@@ -240,21 +349,27 @@ def merge_schemes(all_sources):
             if not scheme or not scheme.get("name"):
                 continue
 
+            scheme_copy = dict(scheme)
+            if scheme_copy.get("type") == "private" or scheme_copy.get("provider"):
+                scheme_copy["source_type"] = "private"
+            else:
+                scheme_copy["source_type"] = scheme_copy.get("source_type", "government")
+
             existing_index = None
             for index, existing in enumerate(merged):
-                if _is_similar_name(existing["name"], scheme["name"]):
+                if _is_similar_name(existing["name"], scheme_copy["name"]):
                     existing_index = index
                     break
 
             if existing_index is None:
-                merged.append(dict(scheme))
+                merged.append(scheme_copy)
                 continue
 
             existing = merged[existing_index]
-            if _detail_score(scheme) > _detail_score(existing):
-                merged[existing_index] = dict(scheme)
+            if _detail_score(scheme_copy) > _detail_score(existing):
+                merged[existing_index] = scheme_copy
             else:
-                for key, value in scheme.items():
+                for key, value in scheme_copy.items():
                     if existing.get(key) in ("", None) and value not in ("", None):
                         existing[key] = value
 

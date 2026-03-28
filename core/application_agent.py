@@ -165,6 +165,101 @@ def _parse_application_result(result, scheme_name):
     return parsed or default
 
 
+def handle_human_handoff(result, profile):
+    import webbrowser
+
+    safe_result = result or {}
+    safe_profile = profile or {}
+    mode = (
+        "Auto-Fill Ready Mode"
+        if safe_result.get("form_detected", False)
+        else "Pre-Application Intelligence Mode"
+    )
+
+    print(f"\n[MODE] {mode}")
+    print("\n==============================")
+    print("🚀 APPLICATION READY")
+    print("==============================")
+
+    apply_link = str(safe_result.get("apply_link", "")).strip()
+    if apply_link:
+        print(f"\nOpening application portal: {apply_link}")
+        try:
+            webbrowser.open(apply_link)
+        except Exception as e:
+            logger.warning(f"[APPLICATION] Could not open browser automatically: {e}")
+    else:
+        print("\n⚠ No direct apply link found. Open manually.")
+
+    if not safe_result.get("form_detected", False):
+        print("⚠ Form not directly accessible (login required). Showing preparation mode.")
+
+    print("\n------------------------------")
+    print("🧠 AUTO-FILL GUIDE")
+    print("------------------------------")
+
+    preferred_keys = [
+        ("full_name", "Name"),
+        ("state", "State"),
+        ("category", "Category"),
+        ("annual_income", "Income"),
+        ("course_level", "Course level"),
+        ("email", "Email"),
+        ("phone", "Phone"),
+    ]
+    shown_keys = set()
+
+    for key, label in preferred_keys:
+        value = safe_profile.get(key)
+        if value in (None, "", {}):
+            continue
+        print(f"{label} → {value}")
+        shown_keys.add(key)
+
+    for key, value in safe_profile.items():
+        if key in shown_keys or isinstance(value, (dict, list)):
+            continue
+        if value in (None, ""):
+            continue
+        print(f"{key.capitalize()} → {value}")
+
+    fields = safe_result.get("fields", []) or []
+    if fields:
+        print("\n------------------------------")
+        print("🧾 FORM FIELDS")
+        print("------------------------------")
+        for field in fields:
+            print(f"- {field}")
+
+    print("\n------------------------------")
+    print("📄 REQUIRED DOCUMENTS")
+    print("------------------------------")
+
+    documents = safe_result.get("documents", []) or []
+    if documents:
+        for doc in documents:
+            print(f"- {doc}")
+    else:
+        print("- No document list extracted")
+
+    print("\n------------------------------")
+    print("📋 APPLICATION STEPS")
+    print("------------------------------")
+
+    steps = safe_result.get("steps", []) or []
+    if steps:
+        for i, step in enumerate(steps, 1):
+            print(f"{i}. {step}")
+    else:
+        print("1. Open the official scholarship portal")
+        print("2. Complete login or OTP manually")
+        print("3. Review the form and fill fields using the guide above")
+
+    print("\n==============================")
+    print("⚠ NOTE: Login/OTP must be completed manually.")
+    print("==============================")
+
+
 def _build_goal(scheme_name, profile=None):
     profile = profile or {}
     name = profile.get("full_name") or profile.get("name") or "Atharv"
@@ -191,7 +286,9 @@ def _build_goal(scheme_name, profile=None):
         "- Avoid blogs unless necessary\n"
         "- If login is required, still extract form structure if visible\n"
         "- Try to reach the application form and identify fields\n"
-        "- If the form is visible, simulate filling it with the student profile but do not submit\n"
+        "- Do not submit any form or attempt login/OTP completion\n"
+        "- If direct application form is not accessible, extract the full application workflow\n"
+        "- Identify login requirements and provide pre-application preparation steps\n"
         "- Handle redirects, login pages, and dynamic UI\n\n"
         "Return ONLY JSON:\n"
         "{\n"
@@ -270,4 +367,6 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
         raise
 
     logger.info(f"[APPLICATION] FINAL STRUCTURED DATA: {final_payload}")
-    return _parse_application_result(final_payload, scheme_name)
+    parsed_result = _parse_application_result(final_payload, scheme_name)
+    handle_human_handoff(parsed_result, profile or {})
+    return parsed_result
