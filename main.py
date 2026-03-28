@@ -84,8 +84,13 @@ def run_discovery():
                     print("\n" + "=" * 80)
                     print("APPLICATION DETAILS")
                     print("=" * 80)
-                    print(f"Scheme: {result['scheme']}")
+                    print(f"Scheme: {selected['name']}")
                     print(f"Apply Link: {result['apply_link']}")
+                    print(f"Form Detected: {result['form_detected']}")
+
+                    print("\nForm Fields:")
+                    for field in result["fields"]:
+                        print(f"- {field}")
 
                     print("\nRequired Documents:")
                     for doc in result["documents"]:

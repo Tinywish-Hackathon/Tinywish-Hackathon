@@ -67,20 +67,30 @@ def _normalize_list(value):
     return [str(value).strip()]
 
 
+def _normalize_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "detected"}
+    return bool(value)
+
+
 def _parse_application_result(result, scheme_name):
     default = {
-        "scheme": scheme_name,
         "apply_link": "",
+        "fields": [],
         "documents": [],
         "steps": [],
+        "form_detected": False,
     }
 
     if isinstance(result, dict):
         return {
-            "scheme": result.get("scheme", scheme_name),
             "apply_link": result.get("apply_link", ""),
-            "documents": result.get("documents", []),
-            "steps": result.get("steps", []),
+            "fields": _normalize_list(result.get("fields", [])),
+            "documents": _normalize_list(result.get("documents", [])),
+            "steps": _normalize_list(result.get("steps", [])),
+            "form_detected": _normalize_bool(result.get("form_detected", False)),
         }
 
     def _materialize(value):
@@ -121,6 +131,7 @@ def _parse_application_result(result, scheme_name):
                 or value.get("url")
                 or ""
             )
+            fields = value.get("fields") or value.get("form_fields") or value.get("required_fields") or []
             documents = (
                 value.get("documents")
                 or value.get("required_documents")
@@ -133,17 +144,19 @@ def _parse_application_result(result, scheme_name):
                 or value.get("applicationSteps")
                 or []
             )
+            form_detected = (
+                value.get("form_detected")
+                or value.get("formDetected")
+                or value.get("has_form")
+                or False
+            )
 
             structured = dict(default)
-            structured["scheme"] = str(
-                value.get("scheme")
-                or value.get("name")
-                or value.get("title")
-                or scheme_name
-            ).strip()
             structured["apply_link"] = str(apply_link).strip()
+            structured["fields"] = _normalize_list(fields)
             structured["documents"] = _normalize_list(documents)
             structured["steps"] = _normalize_list(steps)
+            structured["form_detected"] = _normalize_bool(form_detected)
             return structured
 
         return None
@@ -154,19 +167,27 @@ def _parse_application_result(result, scheme_name):
 
 def _build_goal(scheme_name):
     return (
-        f"Find the selected scholarship '{scheme_name}' and extract:\n"
-        "- Apply link\n"
-        "- Required documents\n"
-        "- Eligibility details\n"
-        "- Steps to apply\n\n"
-        "Handle redirects, login pages, and dynamic UI.\n"
-        "If login is required, capture the pre-login apply link and application steps.\n"
+        "You are an autonomous web agent helping a student apply for a scholarship.\n\n"
+        f"Target scholarship: {scheme_name}\n\n"
+        "Goal:\n"
+        "Navigate to the official application page and extract:\n"
+        "1. Direct apply link\n"
+        "2. Form fields required (name, aadhaar, income, etc.)\n"
+        "3. Required documents\n"
+        "4. Application steps\n\n"
+        "Instructions:\n"
+        "- Prioritize official government websites (scholarships.gov.in)\n"
+        "- Avoid blogs unless necessary\n"
+        "- If login is required, still extract form structure if visible\n"
+        "- Try to reach the application form and identify fields\n"
+        "- Handle redirects, login pages, and dynamic UI\n\n"
         "Return ONLY JSON:\n"
         "{\n"
-        '  "scheme": "...",\n'
         '  "apply_link": "...",\n'
+        '  "fields": ["..."],\n'
         '  "documents": [],\n'
-        '  "steps": []\n'
+        '  "steps": [],\n'
+        '  "form_detected": false\n'
         "}"
     )
 
