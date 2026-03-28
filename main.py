@@ -31,14 +31,26 @@ def wait(msg):
 def run_discovery():
     """Run scheme discovery mode: scrape → match → rank → display."""
     from core.application_agent import run_tinyfish_application_agent
-    from core.discovery.nsp_scraper import get_nsp_schemes
     from core.discovery.eligibility import find_eligible_schemes
+    from core.discovery.multi_source import (
+        merge_schemes,
+        scrape_buddy4study,
+        scrape_careers360,
+        scrape_myscheme,
+        scrape_nsp,
+    )
     from core.discovery.ranking import rank_schemes, format_ranked_output
 
     profile = load_profile(config.PROFILE_PATH)
 
     logger.info("[DISCOVERY] Starting scheme discovery...")
-    schemes = get_nsp_schemes(use_cache=True)
+    source_lists = [
+        scrape_nsp(),
+        scrape_myscheme(),
+        scrape_buddy4study(),
+        scrape_careers360(),
+    ]
+    schemes = merge_schemes(source_lists)
 
     if not schemes:
         print("Could not load schemes. Run with --no-cache to retry scrape.")
