@@ -4,6 +4,7 @@ import json
 import os
 from urllib import error, request
 
+from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
 from utils.logger import get_logger
 
 logger = get_logger("application_agent")
@@ -101,6 +102,14 @@ def _extract_final_event_payload(data):
         return content
 
     return None
+
+
+def _canonical_event_result(data):
+    if not isinstance(data, dict):
+        return _safe_json_loads(data)
+
+    content = data.get("content", data)
+    return _safe_json_loads(content)
 
 
 def _parse_application_result(result, scheme_name):
@@ -336,6 +345,17 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
     if not resolved_api_key:
         raise ValueError("Missing TINYFISH_API_KEY")
 
+    try:
+        sdk_client = get_tinyfish_client()
+        discover_tinyfish_run_method(
+            sdk_client,
+            logger,
+            "[APPLICATION]",
+            warn_on_missing=False,
+        )
+    except Exception as e:
+        logger.debug(f"[APPLICATION] TinyFish SDK method discovery skipped: {e}")
+
     payload = {
         "url": "https://scholarships.gov.in/",
         "goal": _build_goal(scheme_name, profile=profile),
@@ -383,21 +403,30 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
 
                     parsed_events.append(parsed_data)
 
-                    if event_type == "RESULT":
-                        final_payload = _safe_json_loads(parsed_data.get("content", parsed_data))
-                        logger.info("[APPLICATION] Result captured")
+                    if event_type in {"RESULT", "COMPLETED"}:
+                        final_payload = _canonical_event_result(parsed_data)
+                        logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
                         break
 
-                    candidate = _extract_final_event_payload(parsed_data)
-                    if candidate is not None:
-                        final_payload = candidate
-                        logger.info("[APPLICATION] Result captured")
-                        break
+                    if event_type == "MESSAGE":
+                        candidate = _extract_final_event_payload(parsed_data)
+                        if candidate is not None:
+                            final_payload = candidate
+                            logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
+                            break
                 elif str(event_name).strip().lower() == "message":
                     parsed_events.append(parsed_data)
+                    candidate = _safe_json_loads(parsed_data)
+                    if isinstance(candidate, dict) and (
+                        "apply_link" in candidate or "steps" in candidate
+                    ):
+                        final_payload = candidate
+                        logger.info("[APPLICATION] Result captured from event type: message")
+                        break
 
             if not final_payload:
-                for event in reversed(parsed_events):
+                logger.info(f"[APPLICATION] Fallback: scanning {len(parsed_events)} stored messages for result")
+                for event in parsed_events:
                     candidate = _extract_final_event_payload(event)
                     if candidate is not None:
                         final_payload = candidate

@@ -2,7 +2,7 @@
 
 import json
 
-from core.integrations.tinyfish_client import get_tinyfish_client
+from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
 from utils.logger import get_logger
 
 logger = get_logger("ranking")
@@ -376,8 +376,16 @@ def _tinyfish_rank(profile, schemes):
 
     prompt = _build_tinyfish_prompt(profile, scheme_payload)
     client = get_tinyfish_client()
-    logger.info("[RANKING] Using TinyFish via client.run")
-    response = client.run(prompt=prompt)
+    run_method = discover_tinyfish_run_method(client, logger, "[RANKING]")
+    if run_method is None:
+        return _rule_based_rank_with_profile(profile, schemes)
+
+    try:
+        response = run_method(goal=prompt)
+    except TypeError as e:
+        logger.warning(f"[RANKING] TinyFish method invocation failed, using fallback: {e}")
+        return _rule_based_rank_with_profile(profile, schemes)
+
     ranked = _parse_tinyfish_ranking_response(response)
     if not ranked:
         raise ValueError("TinyFish returned no ranked schemes")
