@@ -4,13 +4,12 @@ import json
 import os
 from urllib import error, request
 
-from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
 from utils.logger import get_logger
 
 logger = get_logger("application_agent")
 
 _TINYFISH_AUTOMATION_URL = "https://agent.tinyfish.ai/v1/automation/run-sse"
-_DEFAULT_APPLICATION_URL = "https://scholarships.gov.in/"
+_DEFAULT_APPLICATION_URL = "https://example.com/"
 
 
 def _strip_code_fence(value):
@@ -118,17 +117,33 @@ def _resolve_application_url(apply_link=None):
     return candidate or _DEFAULT_APPLICATION_URL
 
 
+def _default_application_result(scheme_name="", apply_link=""):
+    scheme_label = str(scheme_name or "the selected scheme").strip()
+    resolved_link = str(apply_link or "").strip()
+    return {
+        "apply_link": resolved_link,
+        "fields": [],
+        "documents": [],
+        "steps": [
+            "Open the official scholarship portal",
+            "Complete login or OTP manually",
+            f"Locate and continue the application for {scheme_label}",
+        ],
+        "form_detected": False,
+    }
+
+
 def open_local_preview(url):
     import webbrowser
 
     target_url = _resolve_application_url(url)
-    logger.info(f"[APPLICATION] Opening local preview: {target_url}")
+    logger.info(f"[AGENT] Opening local preview: {target_url}")
 
     try:
         webbrowser.open(target_url)
         return target_url
     except Exception as e:
-        logger.warning(f"[APPLICATION] Could not open local preview automatically: {e}")
+        logger.warning(f"[AGENT] Could not open local preview automatically: {e}")
         return None
 
 
@@ -140,17 +155,17 @@ def _resolve_application_stream(events):
     for event_name, raw_data in events:
         parsed_data = _safe_json_loads(raw_data)
 
-        logger.info(f"[APPLICATION] TinyFish event: {event_name}")
+        logger.info(f"[AGENT] TinyFish event: {event_name}")
 
         if not parsed_data:
             continue
 
         if isinstance(parsed_data, dict):
             event_type = str(parsed_data.get("type") or event_name or "").strip().upper()
-            logger.info(f"[APPLICATION] Event type: {event_type or 'UNKNOWN'}")
+            logger.info(f"[AGENT] Event type: {event_type or 'UNKNOWN'}")
 
             if event_type == "HEARTBEAT":
-                logger.info("[APPLICATION] Skipping heartbeat")
+                logger.info("[AGENT] Skipping heartbeat")
                 continue
 
             last_non_heartbeat_data = parsed_data
@@ -163,21 +178,21 @@ def _resolve_application_stream(events):
                 or parsed_data.get("event")
             )
             if log_text:
-                logger.info(f"[APPLICATION] {log_text}")
+                logger.info(f"[AGENT] {log_text}")
 
             if event_type in {"RESULT", "COMPLETED"}:
                 final_payload = _canonical_event_result(parsed_data)
-                logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
+                logger.info(f"[AGENT] Result captured from event type: {event_type.lower()}")
                 break
 
             candidate = _extract_final_event_payload(parsed_data)
             if candidate is not None:
                 final_payload = candidate
-                logger.info("[APPLICATION] Result detected via keys")
+                logger.info("[AGENT] Result detected via keys")
                 break
             continue
 
-        logger.info(f"[APPLICATION] Event type: {str(event_name).strip().upper() or 'UNKNOWN'}")
+        logger.info(f"[AGENT] Event type: {str(event_name).strip().upper() or 'UNKNOWN'}")
         last_non_heartbeat_data = parsed_data
 
         if str(event_name).strip().lower() != "message":
@@ -187,16 +202,16 @@ def _resolve_application_stream(events):
         candidate = _extract_final_event_payload(_safe_json_loads(parsed_data))
         if candidate is not None:
             final_payload = candidate
-            logger.info("[APPLICATION] Result captured from event type: message")
+            logger.info("[AGENT] Result captured from event type: message")
             break
 
     if final_payload is None:
-        logger.info(f"[APPLICATION] Fallback: scanning {len(parsed_events)} stored messages for result")
+        logger.info(f"[AGENT] Fallback: scanning {len(parsed_events)} stored messages for result")
         for event in parsed_events:
             candidate = _extract_final_event_payload(event)
             if candidate is not None:
                 final_payload = candidate
-                logger.info("[APPLICATION] Using fallback parsed result")
+                logger.info("[AGENT] Using fallback parsed result")
                 break
 
     if final_payload is None:
@@ -210,13 +225,7 @@ def _resolve_application_stream(events):
 
 
 def _parse_application_result(result, scheme_name):
-    default = {
-        "apply_link": "",
-        "fields": [],
-        "documents": [],
-        "steps": [],
-        "form_detected": False,
-    }
+    default = _default_application_result(scheme_name=scheme_name)
 
     if isinstance(result, dict):
         return {
@@ -319,14 +328,14 @@ def handle_human_handoff(result, profile, open_browser=True):
     if apply_link:
         if open_browser:
             print(f"\nOpening application portal: {apply_link}")
-            logger.info("[APPLICATION] Opening portal for manual continuation")
+            logger.info("[AGENT] Opening portal for manual continuation")
             try:
                 webbrowser.open(apply_link)
             except Exception as e:
-                logger.warning(f"[APPLICATION] Could not open browser automatically: {e}")
+                logger.warning(f"[AGENT] Could not open browser automatically: {e}")
         else:
             print(f"\nApplication portal ready: {apply_link}")
-            logger.info("[APPLICATION] Browser launch skipped for manual continuation")
+            logger.info("[AGENT] Browser launch skipped for manual continuation")
     else:
         print("\n⚠ No direct apply link found. Open manually.")
 
@@ -417,16 +426,20 @@ def _build_goal(scheme_name, profile=None, base_url=None):
         f"- Category: {category}\n"
         f"- Income: {income}\n\n"
         "Instructions:\n"
-        f"1. Navigate to {target_url} and try to access the official application page\n"
-        "2. If blocked or login required:\n"
+        f"1. Navigate to {target_url} and move deeper than the landing page toward the real application workflow\n"
+        "2. Follow visible scheme-specific actions such as Apply, View Details, Register, or Continue where safe\n"
+        "3. Detect whether a form is visible, enumerate its fields, and inspect form structure before login walls when possible\n"
+        "4. If a visible pre-auth form exists, interact only with safe, non-destructive fields to confirm the workflow\n"
+        "5. If blocked or login required:\n"
         "   - Extract full workflow\n"
         "   - Identify required documents\n"
         "   - Identify required form fields\n"
-        "3. Prefer official sources but allow trusted private sources if needed\n"
-        "4. Avoid getting stuck on login pages\n"
-        "5. Do NOT attempt to bypass authentication\n\n"
+        "6. Prefer official sources but allow trusted private sources if needed\n"
+        "7. Avoid getting stuck on login pages\n"
+        "8. Do NOT attempt to bypass authentication\n\n"
         "Goal:\n"
         "- Find the most reliable way to apply and prepare the user\n"
+        "- Demonstrate meaningful progress through the live application workflow\n"
         "- Identify the direct apply link if available\n"
         "- Identify form fields required (name, aadhaar, income, etc.)\n"
         "- Identify required documents\n"
@@ -445,21 +458,34 @@ def _build_goal(scheme_name, profile=None, base_url=None):
 def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, apply_link=None, open_browser=True):
     """Run TinyFish automation for a selected scholarship scheme."""
     resolved_api_key = api_key or os.getenv("TINYFISH_API_KEY")
-    if not resolved_api_key:
-        raise ValueError("Missing TINYFISH_API_KEY")
-
     target_url = _resolve_application_url(apply_link)
+    fallback_result = _default_application_result(scheme_name=scheme_name, apply_link=apply_link)
+
+    if not resolved_api_key:
+        logger.warning("[AGENT] Missing TINYFISH_API_KEY, using manual handoff contract")
+        handle_human_handoff(fallback_result, profile or {}, open_browser=open_browser)
+        return fallback_result
+
+    try:
+        from core.integrations.tinyfish_client import (
+            discover_tinyfish_run_method,
+            get_tinyfish_client,
+        )
+    except Exception as e:
+        logger.warning(f"[AGENT] TinyFish client unavailable, using manual handoff contract: {e}")
+        handle_human_handoff(fallback_result, profile or {}, open_browser=open_browser)
+        return fallback_result
 
     try:
         sdk_client = get_tinyfish_client()
         discover_tinyfish_run_method(
             sdk_client,
             logger,
-            "[APPLICATION]",
+            "[AGENT]",
             warn_on_missing=False,
         )
     except Exception as e:
-        logger.debug(f"[APPLICATION] TinyFish SDK method discovery skipped: {e}")
+        logger.info(f"[AGENT] TinyFish SDK method discovery skipped: {e}")
 
     payload = {
         "url": target_url,
@@ -482,13 +508,19 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, appl
             final_payload = _resolve_application_stream(_iter_sse_events(response))
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        logger.error(f"[APPLICATION] TinyFish HTTP error {e.code}: {body}")
-        raise
+        logger.error(f"[AGENT] TinyFish HTTP error {e.code}: {body}")
+        handle_human_handoff(fallback_result, profile or {}, open_browser=open_browser)
+        return fallback_result
     except error.URLError as e:
-        logger.error(f"[APPLICATION] TinyFish network error: {e}")
-        raise
+        logger.error(f"[AGENT] TinyFish network error: {e}")
+        handle_human_handoff(fallback_result, profile or {}, open_browser=open_browser)
+        return fallback_result
+    except Exception as e:
+        logger.error(f"[AGENT] TinyFish request failed: {e}")
+        handle_human_handoff(fallback_result, profile or {}, open_browser=open_browser)
+        return fallback_result
 
-    logger.info(f"[APPLICATION] FINAL STRUCTURED DATA: {final_payload}")
+    logger.info(f"[AGENT] FINAL STRUCTURED DATA: {final_payload}")
     parsed_result = _parse_application_result(final_payload, scheme_name)
     handle_human_handoff(parsed_result, profile or {}, open_browser=open_browser)
     return parsed_result

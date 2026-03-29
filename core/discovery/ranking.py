@@ -1,6 +1,7 @@
 """Ranking Engine - TinyFish-based ranking with deterministic fallback."""
 
 import json
+import sys
 from collections.abc import Callable
 
 from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
@@ -13,7 +14,7 @@ _TOP_N = 5
 _MAX_TINYFISH_INPUT = 20
 _GOVERNMENT_TOP_N = 7
 _PRIVATE_TOP_N = 3
-_DEFAULT_TINYFISH_URL = "https://scholarships.gov.in/"
+_DEFAULT_TINYFISH_URL = "https://example.com/"
 
 _CATEGORY_KEYWORDS = {
     "obc": ["obc", "backward", "ebc", "dnt", "other backward"],
@@ -367,7 +368,6 @@ def _invoke_tinyfish_run_method(run_method: Callable, prompt: str, target_url: s
             return run_method(**kwargs)
         except TypeError as exc:
             last_error = exc
-            logger.debug(f"[RANKING] TinyFish invocation shape failed for keys {tuple(kwargs.keys())}: {exc}")
 
     raise last_error or TypeError("No compatible TinyFish run signature found")
 
@@ -456,12 +456,37 @@ def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
     max_name_len = max(len(name) for name in display_names)
     content_width = max(max_name_len + 20, 44)
     box_width = content_width + 2
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+
+    try:
+        "╔╗╚╝╠╣═║".encode(encoding)
+        chars = {
+            "top_left": "╔",
+            "top_right": "╗",
+            "bottom_left": "╚",
+            "bottom_right": "╝",
+            "mid_left": "╠",
+            "mid_right": "╣",
+            "horizontal": "═",
+            "vertical": "║",
+        }
+    except Exception:
+        chars = {
+            "top_left": "+",
+            "top_right": "+",
+            "bottom_left": "+",
+            "bottom_right": "+",
+            "mid_left": "+",
+            "mid_right": "+",
+            "horizontal": "-",
+            "vertical": "|",
+        }
 
     lines = []
-    lines.append("╔" + "═" * box_width + "╗")
+    lines.append(chars["top_left"] + chars["horizontal"] * box_width + chars["top_right"])
     header = "ELIGIBLE SCHEMES FOR YOUR PROFILE"
-    lines.append("║" + header.center(box_width) + "║")
-    lines.append("╠" + "═" * box_width + "╣")
+    lines.append(chars["vertical"] + header.center(box_width) + chars["vertical"])
+    lines.append(chars["mid_left"] + chars["horizontal"] * box_width + chars["mid_right"])
 
     for i, scheme in enumerate(ranked_schemes, 1):
         source_type = _source_type(scheme)
@@ -475,14 +500,14 @@ def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
         padding = box_width - len(name_line) - len(score_str) - 1
         if padding < 1:
             padding = 1
-        lines.append(f"║{name_line}{' ' * padding}{score_str} ║")
+        lines.append(f"{chars['vertical']}{name_line}{' ' * padding}{score_str} {chars['vertical']}")
 
         if reasons:
             reasons_str = f"    Matched: {', '.join(reasons)}"
             pad2 = box_width - len(reasons_str)
             if pad2 < 0:
                 pad2 = 0
-            lines.append(f"║{reasons_str}{' ' * pad2}║")
+            lines.append(f"{chars['vertical']}{reasons_str}{' ' * pad2}{chars['vertical']}")
 
-    lines.append("╚" + "═" * box_width + "╝")
+    lines.append(chars["bottom_left"] + chars["horizontal"] * box_width + chars["bottom_right"])
     return "\n".join(lines)
