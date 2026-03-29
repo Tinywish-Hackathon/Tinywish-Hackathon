@@ -52,6 +52,17 @@ _APPLY_KEYWORDS = (
     "application",
     "form",
 )
+_ARTICLE_URL_PATTERNS = (
+    "/articles/",
+    "/blog/",
+    "/news/",
+    "/post/",
+    "/list/",
+    "/search",
+    "medium.com",
+    "wordpress.com",
+    "blogspot.com",
+)
 _SITE_CONFIGS = {
     "nsp": {
         "label": "NSP",
@@ -162,18 +173,45 @@ def _scheme_signal_text(selected):
     return " ".join(str(part).strip().lower() for part in parts if part)
 
 
-def choose_execution_strategy(scheme):
+def choose_execution_strategy(scheme, demo_mode=False):
     status = str(getattr(scheme, "status", "") or "").strip().lower()
     signal_text = _scheme_signal_text(scheme)
     has_apply_link = bool(str(getattr(scheme, "apply_link", "") or "").strip())
+    apply_link_lower = str(getattr(scheme, "apply_link", "") or "").strip().lower()
+    source_type = str(getattr(scheme, "source_type", "") or "").strip().lower()
+    is_expired = bool(getattr(scheme, "is_expired", False))
 
-    if status in {"closed", "expired"} or "closed" in signal_text or "expired" in signal_text:
+    # --- SKIP gates ---
+    if status in {"closed", "expired"} or is_expired or "closed" in signal_text or "expired" in signal_text:
         return "skip", "Scheme is marked closed or expired."
 
-    if any(keyword in signal_text for keyword in _LOGIN_WALL_KEYWORDS):
+    if not has_apply_link and not any(kw in signal_text for kw in _APPLY_KEYWORDS):
+        return "skip", "No apply link and no application form signal detected."
+
+    # --- Article page detection ---
+    if has_apply_link and any(pattern in apply_link_lower for pattern in _ARTICLE_URL_PATTERNS):
+        return "extract_only", "Apply link points to an article/listing page, not a direct form."
+
+    # --- Login-only gate ---
+    has_login_signal = any(keyword in signal_text for keyword in _LOGIN_WALL_KEYWORDS)
+    has_apply_signal = any(keyword in signal_text for keyword in _APPLY_KEYWORDS)
+    if has_login_signal and not has_apply_signal:
+        return "extract_only", "Only login/OTP signals detected; no direct application path."
+
+    # --- NSP avoidance in demo mode ---
+    if demo_mode and "scholarships.gov.in" in apply_link_lower:
+        if source_type != "private":
+            return "extract_only", "NSP portal deprioritized in demo mode (login/OTP friction)."
+
+    # --- Login wall downgrade ---
+    if has_login_signal:
         return "extract_only", "Login or OTP wall detected; extract visible requirements only."
 
-    if has_apply_link and any(keyword in signal_text for keyword in _APPLY_KEYWORDS):
+    # --- Direct form / private portal boost ---
+    if source_type == "private" and has_apply_link:
+        return "full_apply", "Private portal with direct apply link — low friction."
+
+    if has_apply_link and has_apply_signal:
         return "full_apply", "Direct application signal detected from the selected portal."
 
     if has_apply_link:
@@ -218,6 +256,8 @@ def _build_strategy_handoff_payload(selected, strategy, reason, apply_link=""):
         "documents": [],
         "steps": steps,
         "form_detected": False,
+        "strategy": strategy.upper(),
+        "reason": reason,
     }
 
 
@@ -334,18 +374,30 @@ def _run_discovery_handoff(
     open_local_preview,
     run_tinyfish_application_agent,
     run_local_portal_flow=None,
+    demo_mode=False,
 ):
     apply_link = _resolve_portal_url(selected)
-    strategy, reason = choose_execution_strategy(selected)
-    logger.info(f"[AGENT] Strategy selected: {strategy}")
+    strategy, reason = choose_execution_strategy(selected, demo_mode=demo_mode)
+
+    # --- Strategy Banner (CRITICAL FOR DEMO) ---
+    strategy_upper = strategy.upper()
+    if strategy_upper == "SKIP":
+        banner_suffix = f" ({reason})"
+    elif strategy_upper == "EXTRACT_ONLY":
+        banner_suffix = " (login required)" if "login" in reason.lower() or "otp" in reason.lower() else f" ({reason})"
+    else:
+        banner_suffix = ""
+    print(f"\n[AGENT] Strategy: {strategy_upper}{banner_suffix}")
+    logger.info(f"[AGENT] Strategy selected: {strategy_upper}")
     logger.info(f"[AGENT] Reason: {reason}")
+
     manual_payload = _build_strategy_handoff_payload(selected, strategy, reason, apply_link=apply_link)
 
     if strategy == "skip":
         print("Skipping execution because the selected scheme appears closed or expired.")
         handle_human_handoff(manual_payload, profile, open_browser=False)
         return {
-            "strategy": strategy,
+            "strategy": strategy_upper,
             "reason": reason,
             "result": manual_payload,
             "success": False,
@@ -358,16 +410,16 @@ def _run_discovery_handoff(
                 open_local_preview(apply_link)
             handle_human_handoff(manual_payload, profile, open_browser=False)
             return {
-                "strategy": strategy,
+                "strategy": strategy_upper,
                 "reason": reason,
                 "result": manual_payload,
                 "success": True,
             }
         if run_local_portal_flow and _site_config_for_scheme(selected) and run_local_portal_flow(selected):
             return {
-                "strategy": strategy,
+                "strategy": strategy_upper,
                 "reason": reason,
-                "result": {"form_detected": True, "apply_link": apply_link},
+                "result": {"form_detected": True, "apply_link": apply_link, "strategy": strategy_upper, "reason": reason},
                 "success": True,
             }
         if apply_link:
@@ -375,7 +427,7 @@ def _run_discovery_handoff(
             open_local_preview(apply_link)
         handle_human_handoff(manual_payload, profile, open_browser=False)
         return {
-            "strategy": strategy,
+            "strategy": strategy_upper,
             "reason": reason,
             "result": manual_payload,
             "success": True,
@@ -390,7 +442,7 @@ def _run_discovery_handoff(
     if strategy == "manual_assist":
         handle_human_handoff(manual_payload, profile, open_browser=False)
         return {
-            "strategy": strategy,
+            "strategy": strategy_upper,
             "reason": reason,
             "result": manual_payload,
             "success": False,
@@ -405,8 +457,14 @@ def _run_discovery_handoff(
                 execution_strategy=strategy,
                 open_browser=not preview_mode,
             )
+            # Ensure strategy/reason propagation from the top-level decision
+            if isinstance(result, dict):
+                if "strategy" not in result:
+                    result["strategy"] = strategy_upper
+                if "reason" not in result:
+                    result["reason"] = reason
             return {
-                "strategy": strategy,
+                "strategy": strategy_upper,
                 "reason": reason,
                 "result": result,
                 "success": _is_successful_execution_result(result),
@@ -417,7 +475,7 @@ def _run_discovery_handoff(
             if preview_mode:
                 handle_human_handoff(manual_payload, profile, open_browser=False)
             return {
-                "strategy": strategy,
+                "strategy": strategy_upper,
                 "reason": reason,
                 "result": manual_payload,
                 "success": False,
@@ -429,7 +487,7 @@ def _run_discovery_handoff(
         print("TinyFish application intelligence unavailable. Opening portal directly.")
     handle_human_handoff(manual_payload, profile, open_browser=not preview_mode)
     return {
-        "strategy": strategy,
+        "strategy": strategy_upper,
         "reason": reason,
         "result": manual_payload,
         "success": False,
@@ -446,6 +504,7 @@ def _execute_ranked_handoff_with_retry(
     run_tinyfish_application_agent,
     run_local_portal_flow=None,
     max_retries=_MAX_EXECUTION_RETRIES,
+    demo_mode=False,
 ):
     last_result = None
     max_attempts = max_retries + 1
@@ -482,6 +541,7 @@ def _execute_ranked_handoff_with_retry(
             open_local_preview,
             run_tinyfish_application_agent,
             run_local_portal_flow,
+            demo_mode=demo_mode,
         )
 
         if handoff_mode == "local" or not TINYFISH_AVAILABLE:
@@ -565,6 +625,7 @@ def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
                     open_local_preview,
                     run_tinyfish_application_agent,
                     _run_local_portal_flow,
+                    demo_mode=demo_mode,
                 )
                 return
             else:

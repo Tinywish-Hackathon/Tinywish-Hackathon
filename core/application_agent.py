@@ -142,6 +142,8 @@ def _default_application_result(scheme_name="", apply_link=""):
             "If login or OTP is required, stop there and continue authentication manually",
         ],
         "form_detected": False,
+        "strategy": "EXTRACT_ONLY",
+        "reason": "Default fallback — no live automation attempted.",
     }
 
 
@@ -360,11 +362,24 @@ def _finalize_application_result(result, scheme_name, requested_url=""):
 
     if _looks_like_login_wall(structured):
         structured["form_detected"] = False
+        structured["strategy"] = "EXTRACT_ONLY"
+        structured["reason"] = "Login/OTP wall detected during execution."
+        logger.info("[AGENT] Login wall detected → switching to PRE-APPLICATION INTELLIGENCE MODE")
+        print("\n[AGENT] Login wall detected → switching to PRE-APPLICATION INTELLIGENCE MODE")
         steps = _normalize_list(structured.get("steps", []))
         stop_step = "Stop here and complete login or OTP manually before continuing."
         if stop_step not in steps:
             steps.append(stop_step)
         structured["steps"] = steps
+    else:
+        if "strategy" not in structured:
+            structured["strategy"] = "FULL_APPLY" if structured.get("form_detected") else "EXTRACT_ONLY"
+        if "reason" not in structured:
+            structured["reason"] = (
+                "Direct form detected — full application possible."
+                if structured.get("form_detected")
+                else "No direct form detected — extraction mode."
+            )
 
     return structured
 
@@ -374,15 +389,27 @@ def handle_human_handoff(result, profile, open_browser=True):
 
     safe_result = result or {}
     safe_profile = profile or {}
-    mode = (
-        "Auto-Fill Ready Mode"
-        if safe_result.get("form_detected", False)
-        else "Pre-Application Intelligence Mode"
-    )
+    strategy = safe_result.get("strategy", "")
+    reason = safe_result.get("reason", "")
+
+    if strategy == "SKIP":
+        mode = "Scheme Skipped"
+    elif strategy == "FULL_APPLY" and safe_result.get("form_detected", False):
+        mode = "Auto-Fill Ready Mode"
+    elif strategy == "EXTRACT_ONLY":
+        mode = "Pre-Application Intelligence Mode"
+    elif safe_result.get("form_detected", False):
+        mode = "Auto-Fill Ready Mode"
+    else:
+        mode = "Pre-Application Intelligence Mode"
 
     print(f"\n[MODE] {mode}")
+    if strategy:
+        print(f"[AGENT] Strategy: {strategy}")
+    if reason:
+        print(f"[AGENT] Reason: {reason}")
     print("\n==============================")
-    print("🚀 APPLICATION READY")
+    print("\U0001f680 APPLICATION READY")
     print("==============================")
 
     apply_link = str(safe_result.get("apply_link", "")).strip()
@@ -398,13 +425,18 @@ def handle_human_handoff(result, profile, open_browser=True):
             print(f"\nApplication portal ready: {apply_link}")
             logger.info("[AGENT] Browser launch skipped for manual continuation")
     else:
-        print("\n⚠ No direct apply link found. Open manually.")
+        print("\n\u26a0 No direct apply link found. Open manually.")
+
+    if strategy == "SKIP":
+        print("\u26a0 This scheme was skipped. See reason above.")
+        print("\n==============================")
+        return
 
     if not safe_result.get("form_detected", False):
-        print("⚠ Form not directly accessible (login required). Showing preparation mode.")
+        print("\u26a0 Form not directly accessible (login required). Showing preparation mode.")
 
     print("\n------------------------------")
-    print("🧠 AUTO-FILL GUIDE")
+    print("\U0001f9e0 AUTO-FILL GUIDE")
     print("------------------------------")
 
     preferred_keys = [
@@ -422,7 +454,7 @@ def handle_human_handoff(result, profile, open_browser=True):
         value = safe_profile.get(key)
         if value in (None, "", {}):
             continue
-        print(f"{label} → {value}")
+        print(f"{label} \u2192 {value}")
         shown_keys.add(key)
 
     for key, value in safe_profile.items():
@@ -430,18 +462,18 @@ def handle_human_handoff(result, profile, open_browser=True):
             continue
         if value in (None, ""):
             continue
-        print(f"{key.capitalize()} → {value}")
+        print(f"{key.capitalize()} \u2192 {value}")
 
     fields = safe_result.get("fields", []) or []
     if fields:
         print("\n------------------------------")
-        print("🧾 FORM FIELDS")
+        print("\U0001f9fe FORM FIELDS")
         print("------------------------------")
         for field in fields:
             print(f"- {field}")
 
     print("\n------------------------------")
-    print("📄 REQUIRED DOCUMENTS")
+    print("\U0001f4c4 REQUIRED DOCUMENTS")
     print("------------------------------")
 
     documents = safe_result.get("documents", []) or []
@@ -452,7 +484,7 @@ def handle_human_handoff(result, profile, open_browser=True):
         print("- No document list extracted")
 
     print("\n------------------------------")
-    print("📋 APPLICATION STEPS")
+    print("\U0001f4cb APPLICATION STEPS")
     print("------------------------------")
 
     steps = safe_result.get("steps", []) or []
@@ -465,7 +497,7 @@ def handle_human_handoff(result, profile, open_browser=True):
         print("3. Review the form and fill fields using the guide above")
 
     print("\n==============================")
-    print("⚠ NOTE: Login/OTP must be completed manually.")
+    print("\u26a0 NOTE: Login/OTP must be completed manually.")
     print("==============================")
 
 
@@ -625,5 +657,24 @@ def run_tinyfish_application_agent(
 
     logger.info(f"[AGENT] FINAL STRUCTURED DATA: {final_payload}")
     parsed_result = _finalize_application_result(final_payload, scheme_name, requested_url=target_url)
+
+    # Ensure strategy/reason are always present
+    if "strategy" not in parsed_result:
+        parsed_result["strategy"] = "FULL_APPLY" if parsed_result.get("form_detected") else "EXTRACT_ONLY"
+    if "reason" not in parsed_result:
+        parsed_result["reason"] = (
+            "Direct form detected — full application possible."
+            if parsed_result.get("form_detected")
+            else "No direct form detected — extraction mode."
+        )
+
+    strategy = parsed_result.get("strategy", "EXTRACT_ONLY")
+    logger.info(f"[AGENT] Strategy: {strategy}")
+    print(f"\n[AGENT] Strategy: {strategy}")
+    if strategy == "EXTRACT_ONLY":
+        reason = parsed_result.get("reason", "")
+        if reason:
+            print(f"[AGENT] Reason: {reason}")
+
     handle_human_handoff(parsed_result, profile or {}, open_browser=open_browser)
     return parsed_result

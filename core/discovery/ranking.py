@@ -290,10 +290,33 @@ def _is_nsp_portal_flow(scheme: SchemeModel) -> bool:
     return source in {"nsp", "national scholarship portal"} or "scholarships.gov.in" in apply_link
 
 
+_ARTICLE_URL_PATTERNS = (
+    "/articles/",
+    "/blog/",
+    "/news/",
+    "/post/",
+    "/list/",
+    "/search",
+    "medium.com",
+    "wordpress.com",
+    "blogspot.com",
+)
+
+
+def _has_article_link(scheme: SchemeModel) -> bool:
+    """Detect if apply_link points to an article/listing page rather than a direct form."""
+    link = str(scheme.apply_link or "").strip().lower()
+    if not link:
+        return False
+    return any(pattern in link for pattern in _ARTICLE_URL_PATTERNS)
+
+
 def _has_direct_form_signal(scheme: SchemeModel) -> bool:
     if not str(scheme.apply_link or "").strip():
         return False
     if _is_login_heavy(scheme):
+        return False
+    if _has_article_link(scheme):
         return False
 
     text = _combined_text(scheme)
@@ -321,19 +344,22 @@ def compute_apply_score(scheme: SchemeModel) -> int:
         score += 2
 
     if _source_type(normalized) == "private":
-        score += 2
+        score += 3  # boosted: private portals have less friction
 
     if _has_visible_apply_action(normalized):
         score += 1
 
     if _has_direct_form_signal(normalized):
-        score += 1
+        score += 3  # boosted: direct forms are highest priority
 
     if _has_application_signal(normalized):
         score += 1
 
+    if _has_article_link(normalized):
+        score -= 2  # penalty: article/listing page, not a direct form
+
     if _is_login_heavy(normalized):
-        score -= 3
+        score -= 4  # increased penalty: login/OTP friction
 
     if _is_external_nsp_redirect(normalized):
         score -= 2
@@ -961,6 +987,19 @@ def rank_schemes(profile, schemes: list[SchemeModel], demo_mode=False) -> list[S
         return _rule_based_rank_with_profile(profile, open_schemes, demo_mode=demo_mode)
 
 
+def _recommend_strategy(scheme: SchemeModel) -> str:
+    """Recommend an execution strategy for display in ranked output."""
+    if scheme.status == "closed" or scheme.is_expired:
+        return "SKIP"
+    if _is_login_heavy(scheme):
+        return "EXTRACT_ONLY"
+    if _has_direct_form_signal(scheme):
+        return "FULL_APPLY"
+    if scheme.is_applyable:
+        return "FULL_APPLY"
+    return "EXTRACT_ONLY"
+
+
 def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
     """Format ranked schemes into a styled terminal output."""
     if not ranked_schemes:
@@ -985,12 +1024,18 @@ def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
         status = str(scheme.status or "unknown").strip() or "unknown"
         applyable = "yes" if scheme.is_applyable else "no"
         deadline_summary = _format_deadline_summary(scheme)
+        recommended = _recommend_strategy(scheme)
+
+        name_line = f"{i}. {prefix} {scheme.name.strip()} (score: {scheme.match_score})"
+        if i == 1:
+            name_line = f"\u2605 BEST MATCH  {name_line}"
 
         entry_lines = [
-            f"{i}. {prefix} {scheme.name.strip()} (score: {scheme.match_score})",
+            name_line,
             f"   Status: {status} | Applyable: {applyable} | Apply score: {scheme.applyability_score}",
         ]
         entry_lines.append(f"   Deadline: {deadline_summary}")
+        entry_lines.append(f"   Recommended: {recommended}")
         if reasons:
             entry_lines.append(f"   Matched: {', '.join(reasons)}")
         rows.append(entry_lines)
