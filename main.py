@@ -18,6 +18,20 @@ from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
 logger = get_logger("main")
 from config import Config
 
+
+def _configure_console_encoding():
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            continue
+
+
+_configure_console_encoding()
+
 TINYFISH_AVAILABLE = bool(os.getenv("TINYFISH_API_KEY"))
 
 if not TINYFISH_AVAILABLE:
