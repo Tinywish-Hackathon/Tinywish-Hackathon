@@ -1,11 +1,7 @@
-"""NSP Scheme Scraper — TinyFish-first discovery with Playwright fallback.
+"""NSP scheme scraper.
 
-Strategy:
-  1. TinyFish (primary) — AI-driven web agent for reliable scheme extraction
-  2. Playwright (fallback) — intent-safe browser navigation with smart clicking
-  3. Cache — stability layer, always used after first successful extraction
-
-All navigation is intent-safe: discovery mode blocks login/apply/OTR clicks.
+Current strategy: Cache -> Playwright accordion extraction.
+TinyFish integration is preserved but currently disabled pending SDK stability.
 """
 
 import json
@@ -23,7 +19,7 @@ _CACHE_PATH = os.path.join(_CACHE_DIR, "schemes_cache.json")
 # Module-level flag for forcing cache refresh (set via --no-cache)
 _FORCE_REFRESH = False
 
-# Homepage — always start here, never use deep links
+# Homepage â€” always start here, never use deep links
 _HOMEPAGE_URL = "https://scholarships.gov.in/"
 
 # Smart navigation candidates (intent-safe, no login/apply keywords)
@@ -37,9 +33,9 @@ _SCHEME_NAV_CANDIDATES = [
 _MAX_PAGES = 20
 
 
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # CACHE LAYER
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _load_cache():
     """Load schemes from local JSON cache if valid."""
@@ -65,9 +61,9 @@ def _save_cache(schemes):
         logger.error(f"[DISCOVERY] Cache write error: {e}")
 
 
-# ─────────────────────────────────────────────────
-# STRATEGY 1: TINYFISH (PRIMARY)
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# STRATEGY 1: TINYFISH (PRESERVED, CURRENTLY DISABLED)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def parse_tinyfish_result(result):
     """Normalize TinyFish responses into a list of scheme dicts."""
@@ -155,16 +151,19 @@ def parse_tinyfish_result(result):
 
 
 def try_tinyfish():
+    """Currently disabled. Returns None. Re-enable when TinyFish SDK method surface is confirmed stable."""
     return None
 
 
 def _try_tinyfish():
+    """Currently disabled. Returns None. Re-enable when TinyFish SDK method surface is confirmed stable."""
+    # DISABLED: uncomment and fix method name when TinyFish SDK is confirmed
     return None
 
 
-# ─────────────────────────────────────────────────
-# STRATEGY 2: PLAYWRIGHT FALLBACK (INTENT-SAFE)
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# STRATEGY 2: PLAYWRIGHT ACCORDION EXTRACTION (ACTIVE)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _set_max_entries(page):
     """Set the DataTables 'Show entries' dropdown to maximum (100)."""
@@ -621,17 +620,13 @@ def _scrape_schemes_playwright():
     return _try_playwright()
 
 
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # PUBLIC API
-# ─────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_nsp_schemes(use_cache=True):
-    """Get NSP scheme list using layered strategy.
-
-    Strategy order:
-      1. Cache
-      2. TinyFish AI agent (primary live strategy)
-      3. Playwright browser (fallback)
+    """Returns schemes from cache if available, otherwise runs Playwright
+    accordion scraper on https://scholarships.gov.in/All-Scholarships.
 
     Args:
         use_cache: If True, load from cache file if it exists.
@@ -649,10 +644,10 @@ def get_nsp_schemes(use_cache=True):
 
     logger.info("[DISCOVERY] Starting fresh scheme extraction...")
 
-    # Layer 2: TinyFish (primary live strategy)
+    # Layer 2: TinyFish integration is preserved but currently disabled.
     schemes = try_tinyfish()
 
-    # Layer 3: Playwright (fallback)
+    # Layer 3: Playwright is the active live extraction path.
     if not schemes:
         print("[DISCOVERY] Falling back to Playwright...")
         logger.info("[DISCOVERY] Falling back to Playwright...")
@@ -662,7 +657,7 @@ def get_nsp_schemes(use_cache=True):
     if schemes:
         _save_cache(schemes)
     else:
-        logger.warning("[DISCOVERY] No schemes extracted — cache not updated")
+        logger.warning("[DISCOVERY] No schemes extracted â€” cache not updated")
 
     # Reset force flag after use
     _FORCE_REFRESH = False
