@@ -34,7 +34,7 @@ def wait(msg):
 
 
 def _build_manual_handoff_payload(selected):
-    apply_link = selected.get("apply_link") or config.START_URL
+    apply_link = selected.apply_link or config.START_URL
     return {
         "apply_link": apply_link,
         "fields": [],
@@ -42,7 +42,7 @@ def _build_manual_handoff_payload(selected):
         "steps": [
             "Open the scholarship portal",
             "Complete login or OTP manually",
-            f"Search for and continue the application for {selected['name']}",
+            f"Search for and continue the application for {selected.name}",
         ],
         "form_detected": False,
     }
@@ -56,7 +56,7 @@ def _run_discovery_handoff(
     open_local_preview,
     run_tinyfish_application_agent,
 ):
-    apply_link = selected.get("apply_link") or config.START_URL
+    apply_link = selected.apply_link or config.START_URL
     manual_payload = _build_manual_handoff_payload(selected)
     preview_mode = handoff_mode in {"local", "hybrid"}
 
@@ -71,7 +71,7 @@ def _run_discovery_handoff(
     if TINYFISH_AVAILABLE:
         try:
             run_tinyfish_application_agent(
-                selected["name"],
+                selected.name,
                 profile=profile,
                 apply_link=apply_link,
                 open_browser=not preview_mode,
@@ -150,7 +150,7 @@ def run_discovery(handoff_mode="agent"):
                 return
             if 1 <= n <= len(ranked):
                 selected = ranked[n - 1]
-                print(f"\nSelected: {selected['name']}")
+                print(f"\nSelected: {selected.name}")
                 print("Handing off to application agent...")
                 _run_discovery_handoff(
                     selected,

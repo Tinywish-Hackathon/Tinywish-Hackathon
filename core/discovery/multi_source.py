@@ -3,9 +3,11 @@
 import html
 import re
 from difflib import SequenceMatcher
+from typing import Any
 from urllib import request
 
 from core.discovery.nsp_scraper import get_nsp_schemes
+from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
 logger = get_logger("multi_source_discovery")
@@ -340,16 +342,22 @@ def _is_similar_name(left, right, threshold=0.85):
     return SequenceMatcher(None, left_key, right_key).ratio() >= threshold
 
 
-def merge_schemes(all_sources):
+def _scheme_to_dict(scheme: SchemeModel | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(scheme, SchemeModel):
+        return scheme.model_dump()
+    return dict(scheme or {})
+
+
+def merge_and_deduplicate(all_sources) -> list[SchemeModel]:
     """Merge multiple scheme lists, deduplicating by name similarity."""
     merged = []
 
     for source_list in all_sources:
         for scheme in source_list:
-            if not scheme or not scheme.get("name"):
+            scheme_copy = _scheme_to_dict(scheme)
+            if not scheme_copy or not scheme_copy.get("name"):
                 continue
 
-            scheme_copy = dict(scheme)
             if scheme_copy.get("type") == "private" or scheme_copy.get("provider"):
                 scheme_copy["source_type"] = "private"
             else:
@@ -373,5 +381,10 @@ def merge_schemes(all_sources):
                     if existing.get(key) in ("", None) and value not in ("", None):
                         existing[key] = value
 
-    logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged)} schemes")
-    return merged
+    merged_models = [SchemeModel.from_dict(entry) for entry in merged if entry.get("name")]
+    logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged_models)} schemes")
+    return merged_models
+
+
+def merge_schemes(all_sources) -> list[SchemeModel]:
+    return merge_and_deduplicate(all_sources)
