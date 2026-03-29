@@ -19,7 +19,7 @@ class UserProfile(BaseModel):
     address: Optional[str] = None
     education: Optional[str] = None
     category: Optional[str] = None
-    income: Optional[str] = None
+    annual_income: Optional[int] = None
     state: Optional[str] = None
     password: Optional[str] = None
 
@@ -44,3 +44,12 @@ class UserProfile(BaseModel):
         if len(v.strip()) < 2:
             raise ValueError("Full name must be at least 2 characters")
         return v.strip()
+
+    @field_validator("annual_income")
+    @classmethod
+    def validate_annual_income(cls, v):
+        if v is None:
+            return v
+        if v < 0:
+            raise ValueError("annual_income must be >= 0")
+        return v
