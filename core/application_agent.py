@@ -3,6 +3,7 @@
 import json
 import os
 from urllib import error, request
+from urllib.parse import urlparse
 
 from utils.logger import get_logger
 
@@ -10,6 +11,17 @@ logger = get_logger("application_agent")
 
 _TINYFISH_AUTOMATION_URL = "https://agent.tinyfish.ai/v1/automation/run-sse"
 _DEFAULT_APPLICATION_URL = "https://example.com/"
+_LOGIN_WALL_KEYWORDS = (
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "otp",
+    "one time password",
+    "authenticate",
+    "authentication",
+    "register to continue",
+)
 
 
 def _strip_code_fence(value):
@@ -125,12 +137,41 @@ def _default_application_result(scheme_name="", apply_link=""):
         "fields": [],
         "documents": [],
         "steps": [
-            "Open the official scholarship portal",
-            "Complete login or OTP manually",
-            f"Locate and continue the application for {scheme_label}",
+            f"Open the selected application page for {scheme_label}",
+            "Check whether the application form is directly accessible without login",
+            "If login or OTP is required, stop there and continue authentication manually",
         ],
         "form_detected": False,
     }
+
+
+def _url_host(url):
+    try:
+        return urlparse(str(url or "").strip()).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _looks_like_login_wall(result):
+    result = result or {}
+    parts = [
+        result.get("apply_link", ""),
+        *result.get("steps", []),
+        *result.get("fields", []),
+        *result.get("documents", []),
+    ]
+    combined = " ".join(str(part).strip().lower() for part in parts if part)
+    return any(keyword in combined for keyword in _LOGIN_WALL_KEYWORDS)
+
+
+def _should_prefer_requested_url(result, requested_url):
+    if _resolve_application_url(requested_url) == _DEFAULT_APPLICATION_URL:
+        return False
+    requested_host = _url_host(requested_url)
+    result_host = _url_host(result.get("apply_link"))
+    if not requested_host or not result_host or requested_host == result_host:
+        return False
+    return not result.get("form_detected", False)
 
 
 def open_local_preview(url):
@@ -224,17 +265,17 @@ def _resolve_application_stream(events):
     return final_payload
 
 
-def _parse_application_result(result, scheme_name):
-    default = _default_application_result(scheme_name=scheme_name)
+def _parse_application_result(result, scheme_name, apply_link=""):
+    default = _default_application_result(scheme_name=scheme_name, apply_link=apply_link)
 
     if isinstance(result, dict):
-        return {
-            "apply_link": result.get("apply_link", ""),
-            "fields": _normalize_list(result.get("fields", [])),
-            "documents": _normalize_list(result.get("documents", [])),
-            "steps": _normalize_list(result.get("steps", [])),
-            "form_detected": _normalize_bool(result.get("form_detected", False)),
-        }
+        structured = dict(default)
+        structured["apply_link"] = str(result.get("apply_link", "")).strip() or default["apply_link"]
+        structured["fields"] = _normalize_list(result.get("fields", []))
+        structured["documents"] = _normalize_list(result.get("documents", []))
+        structured["steps"] = _normalize_list(result.get("steps", []))
+        structured["form_detected"] = _normalize_bool(result.get("form_detected", False))
+        return structured
 
     def _materialize(value):
         if value is None:
@@ -306,6 +347,26 @@ def _parse_application_result(result, scheme_name):
 
     parsed = _walk(result)
     return parsed or default
+
+
+def _finalize_application_result(result, scheme_name, requested_url=""):
+    structured = _parse_application_result(result, scheme_name, apply_link=requested_url)
+    if not structured.get("apply_link"):
+        structured["apply_link"] = str(requested_url or "").strip()
+
+    if _should_prefer_requested_url(structured, requested_url):
+        logger.info("[AGENT] Keeping requested portal instead of auth-blocked external redirect")
+        structured["apply_link"] = str(requested_url or "").strip()
+
+    if _looks_like_login_wall(structured):
+        structured["form_detected"] = False
+        steps = _normalize_list(structured.get("steps", []))
+        stop_step = "Stop here and complete login or OTP manually before continuing."
+        if stop_step not in steps:
+            steps.append(stop_step)
+        structured["steps"] = steps
+
+    return structured
 
 
 def handle_human_handoff(result, profile, open_browser=True):
@@ -408,13 +469,32 @@ def handle_human_handoff(result, profile, open_browser=True):
     print("==============================")
 
 
-def _build_goal(scheme_name, profile=None, base_url=None):
+def _build_goal(scheme_name, profile=None, base_url=None, execution_strategy="full_apply"):
     profile = profile or {}
     target_url = _resolve_application_url(base_url)
     name = profile.get("full_name") or profile.get("name") or "Atharv"
     state = profile.get("state") or "J&K"
     category = profile.get("category") or "OBC"
     income = profile.get("annual_income") or profile.get("income") or 250000
+
+    if execution_strategy == "extract_only":
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Extract requirements only\n"
+            "- Do not attempt a full application flow\n"
+            "- Stop immediately when login, registration, or OTP is required\n\n"
+        )
+    elif execution_strategy == "manual_assist":
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Gather high-value visible guidance only\n"
+            "- Do not chase deep redirects or authenticated flows\n\n"
+        )
+    else:
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Prefer full pre-auth application progress when direct form interaction is possible\n\n"
+        )
 
     return (
         "You are an autonomous web agent helping a student prepare for a scholarship application.\n\n"
@@ -425,37 +505,55 @@ def _build_goal(scheme_name, profile=None, base_url=None):
         f"- State: {state}\n"
         f"- Category: {category}\n"
         f"- Income: {income}\n\n"
-        "Instructions:\n"
-        f"1. Navigate to {target_url} and move deeper than the landing page toward the real application workflow\n"
-        "2. Follow visible scheme-specific actions such as Apply, View Details, Register, or Continue where safe\n"
-        "3. Detect whether a form is visible, enumerate its fields, and inspect form structure before login walls when possible\n"
-        "4. If a visible pre-auth form exists, interact only with safe, non-destructive fields to confirm the workflow\n"
-        "5. If blocked or login required:\n"
-        "   - Extract full workflow\n"
-        "   - Identify required documents\n"
-        "   - Identify required form fields\n"
-        "6. Prefer official sources but allow trusted private sources if needed\n"
-        "7. Avoid getting stuck on login pages\n"
-        "8. Do NOT attempt to bypass authentication\n\n"
+        f"{strategy_block}"
         "Goal:\n"
-        "- Find the most reliable way to apply and prepare the user\n"
-        "- Demonstrate meaningful progress through the live application workflow\n"
-        "- Identify the direct apply link if available\n"
-        "- Identify form fields required (name, aadhaar, income, etc.)\n"
+        "Complete as much of the application workflow as possible.\n\n"
+        "Priorities:\n"
+        "1. Direct form interaction\n"
+        "2. Extract fields and required documents\n"
+        "3. Avoid dead ends such as closed pages and login walls\n\n"
+        "Rules:\n"
+        "- Do NOT blindly follow links to external portals\n"
+        "- Prefer staying on the same domain\n"
+        "- If login is required, extract visible information and stop\n\n"
+        "Instructions:\n"
+        f"1. Start from {target_url} and prefer to stay on this site or portal when possible\n"
+        "2. Prefer workflows where the application form is directly accessible without login\n"
+        "3. Avoid redirecting to a different external portal or domain unless the current page clearly states that the real application must continue there\n"
+        "4. Follow visible scheme-specific actions such as Apply, View Details, Register, or Continue only when they help reach a direct pre-auth application page\n"
+        "5. Detect whether a form is visible, enumerate its fields, and inspect form structure before authentication walls when possible\n"
+        "6. If a visible pre-auth form exists, interact only with safe, non-destructive fields to confirm the workflow\n"
+        "7. If login, sign-in, registration, or OTP is required:\n"
+        "   - Stop before the authenticated flow\n"
+        "   - Extract visible form fields if any\n"
+        "   - Extract required documents\n"
+        "   - Extract the pre-auth application steps\n"
+        "   - Return the most useful pre-auth URL instead of a dead-end login redirect\n"
+        "8. Do NOT attempt to bypass authentication\n\n"
+        "Output requirements:\n"
+        "- Identify the best apply link that is useful before authentication\n"
+        "- Identify required form fields\n"
         "- Identify required documents\n"
         "- Identify application steps\n\n"
         "Return ONLY JSON:\n"
         "{\n"
-        '  "apply_link": "...",\n'
-        '  "fields": ["..."],\n'
+        '  "apply_link": "",\n'
+        '  "fields": [],\n'
         '  "documents": [],\n'
         '  "steps": [],\n'
-        '  "form_detected": false\n'
+        '  "form_detected": boolean\n'
         "}"
     )
 
 
-def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, apply_link=None, open_browser=True):
+def run_tinyfish_application_agent(
+    scheme_name,
+    profile=None,
+    api_key=None,
+    apply_link=None,
+    execution_strategy="full_apply",
+    open_browser=True,
+):
     """Run TinyFish automation for a selected scholarship scheme."""
     resolved_api_key = api_key or os.getenv("TINYFISH_API_KEY")
     target_url = _resolve_application_url(apply_link)
@@ -489,7 +587,12 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, appl
 
     payload = {
         "url": target_url,
-        "goal": _build_goal(scheme_name, profile=profile, base_url=target_url),
+        "goal": _build_goal(
+            scheme_name,
+            profile=profile,
+            base_url=target_url,
+            execution_strategy=execution_strategy,
+        ),
     }
 
     request_body = json.dumps(payload).encode("utf-8")
@@ -521,6 +624,6 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, appl
         return fallback_result
 
     logger.info(f"[AGENT] FINAL STRUCTURED DATA: {final_payload}")
-    parsed_result = _parse_application_result(final_payload, scheme_name)
+    parsed_result = _finalize_application_result(final_payload, scheme_name, requested_url=target_url)
     handle_human_handoff(parsed_result, profile or {}, open_browser=open_browser)
     return parsed_result
