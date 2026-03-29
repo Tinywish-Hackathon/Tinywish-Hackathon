@@ -10,6 +10,7 @@ from utils.logger import get_logger
 logger = get_logger("application_agent")
 
 _TINYFISH_AUTOMATION_URL = "https://agent.tinyfish.ai/v1/automation/run-sse"
+_DEFAULT_APPLICATION_URL = "https://scholarships.gov.in/"
 
 
 def _strip_code_fence(value):
@@ -112,6 +113,102 @@ def _canonical_event_result(data):
     return _safe_json_loads(content)
 
 
+def _resolve_application_url(apply_link=None):
+    candidate = str(apply_link or "").strip()
+    return candidate or _DEFAULT_APPLICATION_URL
+
+
+def open_local_preview(url):
+    import webbrowser
+
+    target_url = _resolve_application_url(url)
+    logger.info(f"[APPLICATION] Opening local preview: {target_url}")
+
+    try:
+        webbrowser.open(target_url)
+        return target_url
+    except Exception as e:
+        logger.warning(f"[APPLICATION] Could not open local preview automatically: {e}")
+        return None
+
+
+def _resolve_application_stream(events):
+    final_payload = None
+    last_non_heartbeat_data = None
+    parsed_events = []
+
+    for event_name, raw_data in events:
+        parsed_data = _safe_json_loads(raw_data)
+
+        logger.info(f"[APPLICATION] TinyFish event: {event_name}")
+
+        if not parsed_data:
+            continue
+
+        if isinstance(parsed_data, dict):
+            event_type = str(parsed_data.get("type") or event_name or "").strip().upper()
+            logger.info(f"[APPLICATION] Event type: {event_type or 'UNKNOWN'}")
+
+            if event_type == "HEARTBEAT":
+                logger.info("[APPLICATION] Skipping heartbeat")
+                continue
+
+            last_non_heartbeat_data = parsed_data
+            parsed_events.append(parsed_data)
+
+            log_text = (
+                parsed_data.get("message")
+                or parsed_data.get("status")
+                or parsed_data.get("step")
+                or parsed_data.get("event")
+            )
+            if log_text:
+                logger.info(f"[APPLICATION] {log_text}")
+
+            if event_type in {"RESULT", "COMPLETED"}:
+                final_payload = _canonical_event_result(parsed_data)
+                logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
+                break
+
+            candidate = _extract_final_event_payload(parsed_data)
+            if candidate is not None:
+                final_payload = candidate
+                logger.info("[APPLICATION] Result detected via keys")
+                break
+            continue
+
+        logger.info(f"[APPLICATION] Event type: {str(event_name).strip().upper() or 'UNKNOWN'}")
+        last_non_heartbeat_data = parsed_data
+
+        if str(event_name).strip().lower() != "message":
+            continue
+
+        parsed_events.append(parsed_data)
+        candidate = _extract_final_event_payload(_safe_json_loads(parsed_data))
+        if candidate is not None:
+            final_payload = candidate
+            logger.info("[APPLICATION] Result captured from event type: message")
+            break
+
+    if final_payload is None:
+        logger.info(f"[APPLICATION] Fallback: scanning {len(parsed_events)} stored messages for result")
+        for event in parsed_events:
+            candidate = _extract_final_event_payload(event)
+            if candidate is not None:
+                final_payload = candidate
+                logger.info("[APPLICATION] Using fallback parsed result")
+                break
+
+    if final_payload is None:
+        logger.warning("No final result event found, using last non-heartbeat data")
+        final_payload = last_non_heartbeat_data
+
+    if isinstance(final_payload, str):
+        final_payload = _safe_json_loads(final_payload)
+
+    return final_payload
+
+
 def _parse_application_result(result, scheme_name):
     default = {
         "apply_link": "",
@@ -202,7 +299,7 @@ def _parse_application_result(result, scheme_name):
     return parsed or default
 
 
-def handle_human_handoff(result, profile):
+def handle_human_handoff(result, profile, open_browser=True):
     import webbrowser
 
     safe_result = result or {}
@@ -220,12 +317,16 @@ def handle_human_handoff(result, profile):
 
     apply_link = str(safe_result.get("apply_link", "")).strip()
     if apply_link:
-        print(f"\nOpening application portal: {apply_link}")
-        logger.info("[APPLICATION] Opening portal for manual continuation")
-        try:
-            webbrowser.open(apply_link)
-        except Exception as e:
-            logger.warning(f"[APPLICATION] Could not open browser automatically: {e}")
+        if open_browser:
+            print(f"\nOpening application portal: {apply_link}")
+            logger.info("[APPLICATION] Opening portal for manual continuation")
+            try:
+                webbrowser.open(apply_link)
+            except Exception as e:
+                logger.warning(f"[APPLICATION] Could not open browser automatically: {e}")
+        else:
+            print(f"\nApplication portal ready: {apply_link}")
+            logger.info("[APPLICATION] Browser launch skipped for manual continuation")
     else:
         print("\n⚠ No direct apply link found. Open manually.")
 
@@ -298,8 +399,9 @@ def handle_human_handoff(result, profile):
     print("==============================")
 
 
-def _build_goal(scheme_name, profile=None):
+def _build_goal(scheme_name, profile=None, base_url=None):
     profile = profile or {}
+    target_url = _resolve_application_url(base_url)
     name = profile.get("full_name") or profile.get("name") or "Atharv"
     state = profile.get("state") or "J&K"
     category = profile.get("category") or "OBC"
@@ -308,13 +410,14 @@ def _build_goal(scheme_name, profile=None):
     return (
         "You are an autonomous web agent helping a student prepare for a scholarship application.\n\n"
         f"Target scholarship: {scheme_name}\n\n"
+        f"Start URL: {target_url}\n\n"
         "Student profile:\n"
         f"- Name: {name}\n"
         f"- State: {state}\n"
         f"- Category: {category}\n"
         f"- Income: {income}\n\n"
         "Instructions:\n"
-        "1. Try to access official application page\n"
+        f"1. Navigate to {target_url} and try to access the official application page\n"
         "2. If blocked or login required:\n"
         "   - Extract full workflow\n"
         "   - Identify required documents\n"
@@ -339,11 +442,13 @@ def _build_goal(scheme_name, profile=None):
     )
 
 
-def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
+def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, apply_link=None, open_browser=True):
     """Run TinyFish automation for a selected scholarship scheme."""
     resolved_api_key = api_key or os.getenv("TINYFISH_API_KEY")
     if not resolved_api_key:
         raise ValueError("Missing TINYFISH_API_KEY")
+
+    target_url = _resolve_application_url(apply_link)
 
     try:
         sdk_client = get_tinyfish_client()
@@ -357,8 +462,8 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
         logger.debug(f"[APPLICATION] TinyFish SDK method discovery skipped: {e}")
 
     payload = {
-        "url": "https://scholarships.gov.in/",
-        "goal": _build_goal(scheme_name, profile=profile),
+        "url": target_url,
+        "goal": _build_goal(scheme_name, profile=profile, base_url=target_url),
     }
 
     request_body = json.dumps(payload).encode("utf-8")
@@ -372,70 +477,9 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
         method="POST",
     )
 
-    final_payload = None
-    last_parsed_data = None
-    parsed_events = []
-
     try:
         with request.urlopen(req, timeout=180) as response:
-            for event_name, raw_data in _iter_sse_events(response):
-                parsed_data = _safe_json_loads(raw_data)
-
-                last_parsed_data = parsed_data
-
-                logger.info(f"[APPLICATION] TinyFish event: {event_name}")
-                logger.info(f"[APPLICATION] Event type: {event_name}")
-
-                if isinstance(parsed_data, dict):
-                    event_type = str(parsed_data.get("type", "")).strip().upper()
-                    if event_type == "HEARTBEAT":
-                        logger.info("[APPLICATION] Skipping heartbeat")
-                        continue
-
-                    log_text = (
-                        parsed_data.get("message")
-                        or parsed_data.get("status")
-                        or parsed_data.get("step")
-                        or parsed_data.get("event")
-                    )
-                    if log_text:
-                        logger.info(f"[APPLICATION] {log_text}")
-
-                    parsed_events.append(parsed_data)
-
-                    if event_type in {"RESULT", "COMPLETED"}:
-                        final_payload = _canonical_event_result(parsed_data)
-                        logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
-                        break
-
-                    if event_type == "MESSAGE":
-                        candidate = _extract_final_event_payload(parsed_data)
-                        if candidate is not None:
-                            final_payload = candidate
-                            logger.info(f"[APPLICATION] Result captured from event type: {event_type.lower()}")
-                            break
-                elif str(event_name).strip().lower() == "message":
-                    parsed_events.append(parsed_data)
-                    candidate = _safe_json_loads(parsed_data)
-                    if isinstance(candidate, dict) and (
-                        "apply_link" in candidate or "steps" in candidate
-                    ):
-                        final_payload = candidate
-                        logger.info("[APPLICATION] Result captured from event type: message")
-                        break
-
-            if not final_payload:
-                logger.info(f"[APPLICATION] Fallback: scanning {len(parsed_events)} stored messages for result")
-                for event in parsed_events:
-                    candidate = _extract_final_event_payload(event)
-                    if candidate is not None:
-                        final_payload = candidate
-                        logger.info("[APPLICATION] Using fallback parsed result")
-                        break
-
-            if not final_payload:
-                logger.warning("No final result event found, using last parsed data")
-                final_payload = last_parsed_data
+            final_payload = _resolve_application_stream(_iter_sse_events(response))
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         logger.error(f"[APPLICATION] TinyFish HTTP error {e.code}: {body}")
@@ -446,5 +490,5 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
 
     logger.info(f"[APPLICATION] FINAL STRUCTURED DATA: {final_payload}")
     parsed_result = _parse_application_result(final_payload, scheme_name)
-    handle_human_handoff(parsed_result, profile or {})
+    handle_human_handoff(parsed_result, profile or {}, open_browser=open_browser)
     return parsed_result

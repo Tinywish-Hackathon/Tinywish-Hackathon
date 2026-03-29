@@ -33,9 +33,70 @@ def wait(msg):
     input(f"\n[MANUAL STEP] {msg} → Press Enter...")
 
 
-def run_discovery():
+def _build_manual_handoff_payload(selected):
+    apply_link = selected.get("apply_link") or config.START_URL
+    return {
+        "apply_link": apply_link,
+        "fields": [],
+        "documents": [],
+        "steps": [
+            "Open the scholarship portal",
+            "Complete login or OTP manually",
+            f"Search for and continue the application for {selected['name']}",
+        ],
+        "form_detected": False,
+    }
+
+
+def _run_discovery_handoff(
+    selected,
+    profile,
+    handoff_mode,
+    handle_human_handoff,
+    open_local_preview,
+    run_tinyfish_application_agent,
+):
+    apply_link = selected.get("apply_link") or config.START_URL
+    manual_payload = _build_manual_handoff_payload(selected)
+    preview_mode = handoff_mode in {"local", "hybrid"}
+
+    if preview_mode:
+        print("Opening local preview...")
+        open_local_preview(apply_link)
+
+    if handoff_mode == "local":
+        handle_human_handoff(manual_payload, profile, open_browser=False)
+        return
+
+    if TINYFISH_AVAILABLE:
+        try:
+            run_tinyfish_application_agent(
+                selected["name"],
+                profile=profile,
+                apply_link=apply_link,
+                open_browser=not preview_mode,
+            )
+        except Exception as e:
+            logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
+            print("Application agent failed. Check logs for details.")
+            if preview_mode:
+                handle_human_handoff(manual_payload, profile, open_browser=False)
+        return
+
+    if preview_mode:
+        print("TinyFish application intelligence unavailable. Using local preview with manual continuation.")
+    else:
+        print("TinyFish application intelligence unavailable. Opening portal directly.")
+    handle_human_handoff(manual_payload, profile, open_browser=not preview_mode)
+
+
+def run_discovery(handoff_mode="agent"):
     """Run scheme discovery mode: scrape → match → rank → display."""
-    from core.application_agent import handle_human_handoff, run_tinyfish_application_agent
+    from core.application_agent import (
+        handle_human_handoff,
+        open_local_preview,
+        run_tinyfish_application_agent,
+    )
     from core.discovery.eligibility import find_eligible_schemes
     from core.discovery.multi_source import (
         merge_schemes,
@@ -91,28 +152,14 @@ def run_discovery():
                 selected = ranked[n - 1]
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
-                if TINYFISH_AVAILABLE:
-                    try:
-                        run_tinyfish_application_agent(selected["name"], profile=profile)
-                    except Exception as e:
-                        logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
-                        print("Application agent failed. Check logs for details.")
-                else:
-                    print("TinyFish application intelligence unavailable. Opening portal directly.")
-                    handle_human_handoff(
-                        {
-                            "apply_link": selected.get("apply_link") or config.START_URL,
-                            "fields": [],
-                            "documents": [],
-                            "steps": [
-                                "Open the scholarship portal",
-                                "Complete login or OTP manually",
-                                f"Search for and continue the application for {selected['name']}",
-                            ],
-                            "form_detected": False,
-                        },
-                        profile,
-                    )
+                _run_discovery_handoff(
+                    selected,
+                    profile,
+                    handoff_mode,
+                    handle_human_handoff,
+                    open_local_preview,
+                    run_tinyfish_application_agent,
+                )
                 return
             else:
                 print(f"Please enter a number between 1 and {len(ranked)}")
@@ -190,6 +237,12 @@ if __name__ == "__main__":
                         help="Run scheme discovery mode")
     parser.add_argument("--apply", action="store_true",
                         help="Run application/login mode (default)")
+    parser.add_argument(
+        "--mode",
+        choices=["agent", "hybrid", "local"],
+        default="agent",
+        help="Discovery handoff mode: agent uses TinyFish, hybrid opens a local preview first, local uses local preview only",
+    )
     parser.add_argument("--no-cache", action="store_true",
                         help="Force fresh scrape (use with --discover)")
     args = parser.parse_args()
@@ -205,6 +258,8 @@ if __name__ == "__main__":
         if args.no_cache:
             from core.discovery import nsp_scraper
             nsp_scraper._FORCE_REFRESH = True
-        run_discovery()
+        run_discovery(handoff_mode=args.mode)
     else:
+        if args.mode != "agent":
+            print("[CONFIG] --mode only affects --discover. Running local apply flow.")
         main()
