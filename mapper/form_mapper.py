@@ -27,6 +27,7 @@ def _get_document_path(label):
         return getattr(config, "CERTIFICATE_PATH", getattr(config, "MARKSHEET_PATH", ""))
     return ""
 
+
 def map_field(field_info, profile):
     """
     Given field_info dictionary and profile data dict, 
@@ -35,7 +36,7 @@ def map_field(field_info, profile):
     label = (field_info.get("label") or field_info.get("placeholder") or field_info.get("name") or "").lower()
     field_type = (field_info.get("type", "text") or "text").lower()
     
-    if "aadhaar" in label or "adhar" in label:
+    if any(value in label for value in ["aadhaar", "aadhar", "adhar", "adhaar", "uid"]):
         if _is_file_field(field_type):
             return "aadhaar", config.AADHAAR_PATH
 
@@ -63,7 +64,7 @@ def map_field(field_info, profile):
         return None, None
 
     # Text mapping
-    if "name" in label:
+    if "name" in label and not any(value in label for value in ["bank", "scheme", "user", "insti"]):
         return "full_name", profile.get("full_name")
         
     if "email" in label:
@@ -75,12 +76,12 @@ def map_field(field_info, profile):
     if "category" in label or "caste" in label:
         return "category", profile.get("category")
     if "income" in label:
-        return "income", profile.get("income")
+        return "annual_income", profile.get("annual_income")
     if "state" in label:
         return "state", profile.get("state")
     if "gender" in label or "sex" in label:
         return "gender", profile.get("gender")
     if "password" in label:
-        return "password", profile.get("password")
+        return None, None
 
     return None, None
