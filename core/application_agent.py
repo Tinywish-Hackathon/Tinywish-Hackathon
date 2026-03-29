@@ -506,6 +506,16 @@ def _build_goal(scheme_name, profile=None, base_url=None, execution_strategy="fu
         f"- Category: {category}\n"
         f"- Income: {income}\n\n"
         f"{strategy_block}"
+        "Goal:\n"
+        "Complete as much of the application workflow as possible.\n\n"
+        "Priorities:\n"
+        "1. Direct form interaction\n"
+        "2. Extract fields and required documents\n"
+        "3. Avoid dead ends such as closed pages and login walls\n\n"
+        "Rules:\n"
+        "- Do NOT blindly follow links to external portals\n"
+        "- Prefer staying on the same domain\n"
+        "- If login is required, extract visible information and stop\n\n"
         "Instructions:\n"
         f"1. Start from {target_url} and prefer to stay on this site or portal when possible\n"
         "2. Prefer workflows where the application form is directly accessible without login\n"
@@ -520,20 +530,18 @@ def _build_goal(scheme_name, profile=None, base_url=None, execution_strategy="fu
         "   - Extract the pre-auth application steps\n"
         "   - Return the most useful pre-auth URL instead of a dead-end login redirect\n"
         "8. Do NOT attempt to bypass authentication\n\n"
-        "Goal:\n"
-        "- Find the most reliable, directly accessible application workflow\n"
-        "- Demonstrate meaningful progress through the live workflow before login walls\n"
+        "Output requirements:\n"
         "- Identify the best apply link that is useful before authentication\n"
-        "- Identify form fields required (name, aadhaar, income, etc.)\n"
+        "- Identify required form fields\n"
         "- Identify required documents\n"
         "- Identify application steps\n\n"
         "Return ONLY JSON:\n"
         "{\n"
-        '  "apply_link": "...",\n'
-        '  "fields": ["..."],\n'
+        '  "apply_link": "",\n'
+        '  "fields": [],\n'
         '  "documents": [],\n'
         '  "steps": [],\n'
-        '  "form_detected": false\n'
+        '  "form_detected": boolean\n'
         "}"
     )
 

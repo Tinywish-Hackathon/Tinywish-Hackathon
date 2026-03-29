@@ -37,6 +37,7 @@ _DEPENDENCY_MODULES = {
     "playwright": "playwright",
 }
 _REPORTED_MISSING_DEPENDENCIES = set()
+_MAX_EXECUTION_RETRIES = 2
 _LOGIN_WALL_KEYWORDS = (
     "login",
     "log in",
@@ -220,6 +221,28 @@ def _build_strategy_handoff_payload(selected, strategy, reason, apply_link=""):
     }
 
 
+def _resolve_demo_configuration(requested_mode, demo_mode=False):
+    resolved_demo_mode = bool(demo_mode or requested_mode == "demo")
+    resolved_handoff_mode = "agent" if requested_mode == "demo" else requested_mode
+    return resolved_handoff_mode, resolved_demo_mode
+
+
+def _has_meaningful_result(result):
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("apply_link", "")).strip():
+        return True
+    return any(result.get(key) for key in ("fields", "documents", "steps"))
+
+
+def _is_successful_execution_result(result):
+    if not isinstance(result, dict):
+        return False
+    if not result.get("form_detected", False):
+        return False
+    return _has_meaningful_result(result)
+
+
 def run_local_apply_flow(site_url=None, site_flow=None, site_intent="apply"):
     site_url = str(site_url or config.START_URL).strip()
     site_flow = site_flow or NSP_FLOW
@@ -321,7 +344,12 @@ def _run_discovery_handoff(
     if strategy == "skip":
         print("Skipping execution because the selected scheme appears closed or expired.")
         handle_human_handoff(manual_payload, profile, open_browser=False)
-        return
+        return {
+            "strategy": strategy,
+            "reason": reason,
+            "result": manual_payload,
+            "success": False,
+        }
 
     if handoff_mode == "local":
         if strategy in {"extract_only", "manual_assist"}:
@@ -329,14 +357,29 @@ def _run_discovery_handoff(
                 print("Opening local preview...")
                 open_local_preview(apply_link)
             handle_human_handoff(manual_payload, profile, open_browser=False)
-            return
+            return {
+                "strategy": strategy,
+                "reason": reason,
+                "result": manual_payload,
+                "success": True,
+            }
         if run_local_portal_flow and _site_config_for_scheme(selected) and run_local_portal_flow(selected):
-            return
+            return {
+                "strategy": strategy,
+                "reason": reason,
+                "result": {"form_detected": True, "apply_link": apply_link},
+                "success": True,
+            }
         if apply_link:
             print("Opening local preview...")
             open_local_preview(apply_link)
         handle_human_handoff(manual_payload, profile, open_browser=False)
-        return
+        return {
+            "strategy": strategy,
+            "reason": reason,
+            "result": manual_payload,
+            "success": True,
+        }
 
     preview_mode = handoff_mode == "hybrid"
 
@@ -346,29 +389,108 @@ def _run_discovery_handoff(
 
     if strategy == "manual_assist":
         handle_human_handoff(manual_payload, profile, open_browser=False)
-        return
+        return {
+            "strategy": strategy,
+            "reason": reason,
+            "result": manual_payload,
+            "success": False,
+        }
 
     if TINYFISH_AVAILABLE:
         try:
-            run_tinyfish_application_agent(
+            result = run_tinyfish_application_agent(
                 selected.name,
                 profile=profile,
                 apply_link=apply_link,
                 execution_strategy=strategy,
                 open_browser=not preview_mode,
             )
+            return {
+                "strategy": strategy,
+                "reason": reason,
+                "result": result,
+                "success": _is_successful_execution_result(result),
+            }
         except Exception as e:
             logger.error(f"[AGENT] TinyFish application agent failed: {e}")
             print("Application agent failed. Check logs for details.")
             if preview_mode:
                 handle_human_handoff(manual_payload, profile, open_browser=False)
-        return
+            return {
+                "strategy": strategy,
+                "reason": reason,
+                "result": manual_payload,
+                "success": False,
+            }
 
     if preview_mode:
         print("TinyFish application intelligence unavailable. Using local preview with manual continuation.")
     else:
         print("TinyFish application intelligence unavailable. Opening portal directly.")
     handle_human_handoff(manual_payload, profile, open_browser=not preview_mode)
+    return {
+        "strategy": strategy,
+        "reason": reason,
+        "result": manual_payload,
+        "success": False,
+    }
+
+
+def _execute_ranked_handoff_with_retry(
+    ranked,
+    start_index,
+    profile,
+    handoff_mode,
+    handle_human_handoff,
+    open_local_preview,
+    run_tinyfish_application_agent,
+    run_local_portal_flow=None,
+    max_retries=_MAX_EXECUTION_RETRIES,
+):
+    last_result = None
+    max_attempts = max_retries + 1
+
+    for attempt in range(max_attempts):
+        candidate_index = start_index + attempt
+        if candidate_index >= len(ranked):
+            break
+
+        selected = ranked[candidate_index]
+        if attempt == 0:
+            print(f"\nSelected: {selected.name}")
+            print("Handing off to application agent...")
+        else:
+            logger.info("[AGENT] Retry triggered — selecting next scheme")
+            print("[AGENT] Retry triggered — selecting next scheme")
+            print(f"Trying next scheme: {selected.name}")
+
+        portal_url = _resolve_portal_url(selected)
+        profile_name = profile.get("full_name") or profile.get("name") or ""
+        log_application(
+            selected.name,
+            portal_url,
+            selected.source_type,
+            "handoff_completed",
+            profile_name=profile_name,
+        )
+
+        last_result = _run_discovery_handoff(
+            selected,
+            profile,
+            handoff_mode,
+            handle_human_handoff,
+            open_local_preview,
+            run_tinyfish_application_agent,
+            run_local_portal_flow,
+        )
+
+        if handoff_mode == "local" or not TINYFISH_AVAILABLE:
+            return last_result
+
+        if last_result and last_result.get("success"):
+            return last_result
+
+    return last_result
 
 
 def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
@@ -387,7 +509,7 @@ def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
         collect_source_lists,
         merge_schemes,
     )
-    from core.discovery.ranking import _rule_based_rank, rank_schemes, format_ranked_output
+    from core.discovery.ranking import _rule_based_rank, filter_open_schemes, rank_schemes, format_ranked_output
 
     profile = load_profile(config.PROFILE_PATH)
     init_tracker()
@@ -395,20 +517,23 @@ def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
     logger.info("[DISCOVERY] Starting scheme discovery...")
     source_lists = collect_source_lists(profile, use_cache=use_cache)
     schemes = merge_schemes(source_lists)
+    schemes = filter_open_schemes(schemes, active_logger=logger, log_prefix="[DISCOVERY]")
 
     if not schemes:
-        print("Could not load schemes. Run with --no-cache to retry scrape.")
+        print("No open schemes available after deadline filtering.")
         return
 
     eligible = find_eligible_schemes(profile, schemes)
 
     if not eligible:
-        print("No eligible schemes found for your profile.")
+        print("No eligible open schemes found for your profile.")
         print("Tip: Check state/category spelling in profile.json")
         return
 
     if demo_mode:
-        print("[CONFIG] Demo mode enabled: prioritizing open, direct, lower-friction application flows.")
+        print("[MODE] Demo mode active")
+        logger.info("[MODE] Demo mode active")
+        print("[CONFIG] Prioritizing open, private, direct-form application flows for the demo.")
 
     if TINYFISH_AVAILABLE:
         ranked = rank_schemes(profile, eligible, demo_mode=demo_mode)
@@ -427,19 +552,13 @@ def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
                 return
             if 1 <= n <= len(ranked):
                 selected = ranked[n - 1]
-                portal_url = _resolve_portal_url(selected)
-                profile_name = profile.get("full_name") or profile.get("name") or ""
-                print(f"\nSelected: {selected.name}")
-                print("Handing off to application agent...")
-                log_application(
-                    selected.name,
-                    portal_url,
-                    selected.source_type,
-                    "handoff_completed",
-                    profile_name=profile_name,
-                )
-                _run_discovery_handoff(
-                    selected,
+                if str(getattr(selected, "status", "")).strip().lower() == "closed":
+                    logger.info(f"[DISCOVERY] Skipping closed scheme: {selected.name}")
+                    print("That scheme is closed and cannot be executed. Please choose an open scheme.")
+                    continue
+                _execute_ranked_handoff_with_retry(
+                    ranked,
+                    n - 1,
                     profile,
                     handoff_mode,
                     handle_human_handoff,
@@ -475,9 +594,9 @@ if __name__ == "__main__":
                         help="Print recent application history and exit")
     parser.add_argument(
         "--mode",
-        choices=["agent", "hybrid", "local"],
+        choices=["agent", "hybrid", "local", "demo"],
         default="agent",
-        help="Discovery handoff mode: agent uses TinyFish, hybrid opens a local preview first, local uses local preview only",
+        help="Discovery handoff mode: agent uses TinyFish, hybrid opens a local preview first, local uses local preview only, demo enables demo-prioritized agent mode",
     )
     parser.add_argument("--no-cache", action="store_true",
                         help="Force fresh scrape (use with --discover)")
@@ -504,8 +623,9 @@ if __name__ == "__main__":
         if args.no_cache:
             from core.discovery import nsp_scraper
             nsp_scraper._FORCE_REFRESH = True
-        run_discovery(handoff_mode=args.mode, use_cache=not args.no_cache, demo_mode=args.demo_mode)
+        resolved_mode, resolved_demo_mode = _resolve_demo_configuration(args.mode, args.demo_mode)
+        run_discovery(handoff_mode=resolved_mode, use_cache=not args.no_cache, demo_mode=resolved_demo_mode)
     else:
-        if args.mode != "agent":
+        if args.mode != "agent" or args.demo_mode:
             print("[CONFIG] --mode only affects --discover. Running local apply flow.")
         main()

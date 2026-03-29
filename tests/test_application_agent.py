@@ -54,9 +54,21 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
         self.assertEqual(url, "https://wis.ntu.edu.sg/apply")
         self.assertIn("Start URL: https://wis.ntu.edu.sg/apply", goal)
         self.assertIn("Start from https://wis.ntu.edu.sg/apply", goal)
+        self.assertIn("Complete as much of the application workflow as possible.", goal)
+        self.assertIn("1. Direct form interaction", goal)
+        self.assertIn("2. Extract fields and required documents", goal)
+        self.assertIn("3. Avoid dead ends such as closed pages and login walls", goal)
+        self.assertIn("Do NOT blindly follow links to external portals", goal)
+        self.assertIn("Prefer staying on the same domain", goal)
+        self.assertIn("If login is required, extract visible information and stop", goal)
         self.assertIn("Prefer workflows where the application form is directly accessible without login", goal)
         self.assertIn("Avoid redirecting to a different external portal or domain", goal)
         self.assertIn("Stop before the authenticated flow", goal)
+        self.assertIn('"apply_link": ""', goal)
+        self.assertIn('"fields": []', goal)
+        self.assertIn('"documents": []', goal)
+        self.assertIn('"steps": []', goal)
+        self.assertIn('"form_detected": boolean', goal)
 
     def test_extract_only_goal_includes_strategy_constraints(self):
         goal = _build_goal(
@@ -69,6 +81,7 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
         self.assertIn("Extract requirements only", goal)
         self.assertIn("Do not attempt a full application flow", goal)
         self.assertIn("Stop immediately when login, registration, or OTP is required", goal)
+        self.assertIn("If login is required, extract visible information and stop", goal)
 
     def test_falls_back_to_neutral_url_when_apply_link_missing(self):
         url = _resolve_application_url("")

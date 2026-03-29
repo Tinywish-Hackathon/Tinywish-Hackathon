@@ -6,6 +6,18 @@ from schemas.scheme_model import SchemeModel
 
 
 class DiscoveryHandoffModeTests(unittest.TestCase):
+    def test_mode_demo_resolves_to_agent_with_demo_bias(self):
+        handoff_mode, demo_mode = main._resolve_demo_configuration("demo", False)
+
+        self.assertEqual(handoff_mode, "agent")
+        self.assertTrue(demo_mode)
+
+    def test_demo_flag_preserves_requested_handoff_mode(self):
+        handoff_mode, demo_mode = main._resolve_demo_configuration("hybrid", True)
+
+        self.assertEqual(handoff_mode, "hybrid")
+        self.assertTrue(demo_mode)
+
     def test_hybrid_opens_preview_before_tinyfish(self):
         calls = []
         selected = SchemeModel(
@@ -149,6 +161,99 @@ class DiscoveryHandoffModeTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "handoff")
+
+    def test_execute_ranked_handoff_retries_next_scheme_after_failed_result(self):
+        ranked = [
+            SchemeModel(
+                name="First Scheme",
+                apply_link="https://example.com/first",
+                status="open",
+                eligibility="Apply online through the scholarship form",
+                source_type="private",
+            ),
+            SchemeModel(
+                name="Second Scheme",
+                apply_link="https://example.com/second",
+                status="open",
+                eligibility="Apply online through the scholarship form",
+                source_type="private",
+            ),
+        ]
+        agent_calls = []
+
+        def fake_agent(name, profile=None, apply_link=None, execution_strategy="full_apply", open_browser=True):
+            agent_calls.append(name)
+            if name == "First Scheme":
+                return {
+                    "apply_link": apply_link,
+                    "fields": [],
+                    "documents": [],
+                    "steps": ["Opened page"],
+                    "form_detected": False,
+                }
+            return {
+                "apply_link": apply_link,
+                "fields": ["Name"],
+                "documents": ["ID"],
+                "steps": ["Opened form"],
+                "form_detected": True,
+            }
+
+        with patch.object(main, "TINYFISH_AVAILABLE", True), patch("builtins.print"), patch.object(
+            main.logger, "info"
+        ) as mock_info, patch.object(main, "log_application"):
+            result = main._execute_ranked_handoff_with_retry(
+                ranked,
+                0,
+                {},
+                "agent",
+                lambda result, profile, open_browser=True: None,
+                lambda url: None,
+                fake_agent,
+            )
+
+        self.assertEqual(agent_calls, ["First Scheme", "Second Scheme"])
+        self.assertTrue(result["success"])
+        mock_info.assert_any_call("[AGENT] Retry triggered — selecting next scheme")
+
+    def test_execute_ranked_handoff_limits_retries_to_two(self):
+        ranked = [
+            SchemeModel(
+                name=f"Scheme {index}",
+                apply_link=f"https://example.com/{index}",
+                status="open",
+                eligibility="Apply online through the scholarship form",
+                source_type="private",
+            )
+            for index in range(4)
+        ]
+        agent_calls = []
+
+        def fake_agent(name, profile=None, apply_link=None, execution_strategy="full_apply", open_browser=True):
+            agent_calls.append(name)
+            return {
+                "apply_link": apply_link,
+                "fields": [],
+                "documents": [],
+                "steps": ["Opened page"],
+                "form_detected": False,
+            }
+
+        with patch.object(main, "TINYFISH_AVAILABLE", True), patch("builtins.print"), patch.object(
+            main, "log_application"
+        ):
+            result = main._execute_ranked_handoff_with_retry(
+                ranked,
+                0,
+                {},
+                "agent",
+                lambda result, profile, open_browser=True: None,
+                lambda url: None,
+                fake_agent,
+            )
+
+        self.assertEqual(agent_calls, ["Scheme 0", "Scheme 1", "Scheme 2"])
+        self.assertFalse(result["success"])
 
 
 if __name__ == "__main__":
