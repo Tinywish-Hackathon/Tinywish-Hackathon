@@ -2,12 +2,13 @@ import unittest
 from unittest.mock import patch
 
 import main
+from schemas.scheme_model import SchemeModel
 
 
 class DiscoveryHandoffModeTests(unittest.TestCase):
     def test_hybrid_opens_preview_before_tinyfish(self):
         calls = []
-        selected = {"name": "NTU Scholarship", "apply_link": "https://wis.ntu.edu.sg/apply"}
+        selected = SchemeModel(name="NTU Scholarship", apply_link="https://wis.ntu.edu.sg/apply")
 
         with patch.object(main, "TINYFISH_AVAILABLE", True), patch("builtins.print"):
             main._run_discovery_handoff(
@@ -26,7 +27,7 @@ class DiscoveryHandoffModeTests(unittest.TestCase):
 
     def test_local_mode_stays_local(self):
         calls = []
-        selected = {"name": "NTU Scholarship", "apply_link": "https://wis.ntu.edu.sg/apply"}
+        selected = SchemeModel(name="NTU Scholarship", apply_link="https://wis.ntu.edu.sg/apply")
 
         with patch.object(main, "TINYFISH_AVAILABLE", True), patch("builtins.print"):
             main._run_discovery_handoff(

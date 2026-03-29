@@ -3,6 +3,7 @@
 import json
 
 from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
+from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
 logger = get_logger("ranking")
@@ -26,60 +27,32 @@ _COURSE_KEYWORDS = {
 }
 
 
-def _scheme_value(scheme, key, default=None):
-    if isinstance(scheme, dict):
-        return scheme.get(key, default)
-    return getattr(scheme, key, default)
+def _copy_scheme_fields(scheme: SchemeModel) -> SchemeModel:
+    return scheme.model_copy(deep=True)
 
 
-def _copy_scheme_fields(scheme):
-    fields = [
-        "name",
-        "state",
-        "category",
-        "income_limit",
-        "course_level",
-        "provider",
-        "eligibility",
-        "apply_link",
-        "type",
-        "source_type",
-        "match_score",
-        "match_reasons",
-        "reason",
-        "priority",
-    ]
-    copied = {}
-    for field in fields:
-        value = _scheme_value(scheme, field, None)
-        if value is not None:
-            copied[field] = value
-    return copied
-
-
-def _source_type(scheme):
-    source_type = str(_scheme_value(scheme, "source_type", "") or "").strip().lower()
+def _source_type(scheme: SchemeModel) -> str:
+    source_type = str(scheme.source_type or "").strip().lower()
     if source_type:
         return source_type
-    scheme_type = str(_scheme_value(scheme, "type", "") or "").strip().lower()
-    if scheme_type == "private" or _scheme_value(scheme, "provider", None):
+    if scheme.provider:
         return "private"
     return "government"
 
 
-def _combined_text(scheme):
+def _combined_text(scheme: SchemeModel) -> str:
     parts = [
-        _scheme_value(scheme, "name", ""),
-        _scheme_value(scheme, "eligibility", ""),
-        _scheme_value(scheme, "category", ""),
-        _scheme_value(scheme, "state", ""),
-        _scheme_value(scheme, "course_level", ""),
-        _scheme_value(scheme, "provider", ""),
+        scheme.name,
+        scheme.eligibility,
+        scheme.category,
+        scheme.state,
+        scheme.course_level,
+        scheme.provider,
     ]
     return " ".join(str(part).strip() for part in parts if part).lower()
 
 
-def _category_match(profile, scheme, allow_open=False):
+def _category_match(profile, scheme: SchemeModel, allow_open=False):
     category = str(profile.get("category", "") or "").strip().lower()
     terms = _CATEGORY_KEYWORDS.get(category, [category] if category else [])
     text = _combined_text(scheme)
@@ -87,7 +60,7 @@ def _category_match(profile, scheme, allow_open=False):
     if any(term in text for term in terms if term):
         return True
 
-    scheme_category = str(_scheme_value(scheme, "category", "") or "").strip().lower()
+    scheme_category = str(scheme.category or "").strip().lower()
     if scheme_category and any(term in scheme_category for term in terms if term):
         return True
 
@@ -97,7 +70,7 @@ def _category_match(profile, scheme, allow_open=False):
     return False
 
 
-def _state_match(profile, scheme):
+def _state_match(profile, scheme: SchemeModel):
     state = str(profile.get("state", "") or "").strip().lower()
     if not state:
         return False
@@ -117,15 +90,15 @@ def _state_match(profile, scheme):
     return any(variant and variant in text for variant in variants)
 
 
-def _course_match(profile, scheme):
+def _course_match(profile, scheme: SchemeModel):
     level = str(profile.get("course_level", "") or "").strip().lower()
     terms = _COURSE_KEYWORDS.get(level, [level] if level else [])
     text = _combined_text(scheme)
     return any(term in text for term in terms if term)
 
 
-def _income_match(profile, scheme):
-    income_limit = _scheme_value(scheme, "income_limit", None)
+def _income_match(profile, scheme: SchemeModel):
+    income_limit = scheme.income_limit
     annual_income = profile.get("annual_income")
     if income_limit in (None, "") or annual_income in (None, ""):
         return False
@@ -144,15 +117,15 @@ def _ensure_reason_list(value):
     return []
 
 
-def _government_ranked_entry(profile, scheme):
+def _government_ranked_entry(profile, scheme: SchemeModel) -> SchemeModel:
     entry = _copy_scheme_fields(scheme)
-    score = _scheme_value(scheme, "match_score", 0) or 0
+    score = scheme.match_score or 0
     try:
         score = int(score)
     except (TypeError, ValueError):
         score = 0
 
-    reasons = _ensure_reason_list(_scheme_value(scheme, "match_reasons", []))
+    reasons = _ensure_reason_list(scheme.match_reasons)
 
     if not reasons:
         if _category_match(profile, scheme):
@@ -170,13 +143,13 @@ def _government_ranked_entry(profile, scheme):
         if "income" not in reasons:
             reasons.append("income")
 
-    entry["source_type"] = "government"
-    entry["match_score"] = score
-    entry["match_reasons"] = reasons
+    entry.source_type = "government"
+    entry.match_score = score
+    entry.match_reasons = reasons
     return entry
 
 
-def _private_ranked_entry(profile, scheme):
+def _private_ranked_entry(profile, scheme: SchemeModel) -> SchemeModel:
     entry = _copy_scheme_fields(scheme)
     score = 0
     reasons = []
@@ -190,7 +163,7 @@ def _private_ranked_entry(profile, scheme):
         score += 1
         reasons.append("course")
 
-    if str(_scheme_value(scheme, "apply_link", "") or "").strip():
+    if str(scheme.apply_link or "").strip():
         score += 1
         reasons.append("apply link")
 
@@ -198,49 +171,49 @@ def _private_ranked_entry(profile, scheme):
         score += 1
         reasons.append("merit/open")
 
-    entry["source_type"] = "private"
-    entry["match_score"] = score
-    entry["match_reasons"] = reasons
+    entry.source_type = "private"
+    entry.match_score = score
+    entry.match_reasons = reasons
     return entry
 
 
-def _rule_based_rank(schemes):
+def _rule_based_rank(schemes: list[SchemeModel]) -> list[SchemeModel]:
     """Fallback deterministic ranking with government-first source balancing."""
     govt_ranked = []
     private_ranked = []
 
     for scheme in schemes:
         entry = _copy_scheme_fields(scheme)
-        entry["source_type"] = _source_type(scheme)
-        entry["match_score"] = int(_scheme_value(scheme, "match_score", 0) or 0)
-        entry["match_reasons"] = _ensure_reason_list(_scheme_value(scheme, "match_reasons", []))
+        entry.source_type = _source_type(scheme)
+        entry.match_score = int(scheme.match_score or 0)
+        entry.match_reasons = _ensure_reason_list(scheme.match_reasons)
 
-        if entry["source_type"] == "private":
+        if entry.source_type == "private":
             text = _combined_text(scheme)
-            if str(_scheme_value(scheme, "apply_link", "") or "").strip():
-                entry["match_score"] += 1
-                if "apply link" not in entry["match_reasons"]:
-                    entry["match_reasons"].append("apply link")
+            if str(scheme.apply_link or "").strip():
+                entry.match_score += 1
+                if "apply link" not in entry.match_reasons:
+                    entry.match_reasons.append("apply link")
             if "merit" in text or "open" in text:
-                entry["match_score"] += 1
-                if "merit/open" not in entry["match_reasons"]:
-                    entry["match_reasons"].append("merit/open")
+                entry.match_score += 1
+                if "merit/open" not in entry.match_reasons:
+                    entry.match_reasons.append("merit/open")
             private_ranked.append(entry)
         else:
             govt_ranked.append(entry)
 
-    govt_ranked.sort(key=lambda s: (-s.get("match_score", 0), str(s.get("name", "")).lower()))
-    private_ranked.sort(key=lambda s: (-s.get("match_score", 0), str(s.get("name", "")).lower()))
+    govt_ranked.sort(key=lambda s: (-s.match_score, s.name.lower()))
+    private_ranked.sort(key=lambda s: (-s.match_score, s.name.lower()))
 
     return govt_ranked[:_GOVERNMENT_TOP_N] + private_ranked[:_PRIVATE_TOP_N]
 
 
-def _rule_based_rank_with_profile(profile, schemes):
+def _rule_based_rank_with_profile(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     govt_ranked = [_government_ranked_entry(profile, scheme) for scheme in schemes if _source_type(scheme) == "government"]
     private_ranked = [_private_ranked_entry(profile, scheme) for scheme in schemes if _source_type(scheme) == "private"]
 
-    govt_ranked.sort(key=lambda s: (-s.get("match_score", 0), str(s.get("name", "")).lower()))
-    private_ranked.sort(key=lambda s: (-s.get("match_score", 0), str(s.get("name", "")).lower()))
+    govt_ranked.sort(key=lambda s: (-s.match_score, s.name.lower()))
+    private_ranked.sort(key=lambda s: (-s.match_score, s.name.lower()))
 
     return govt_ranked[:_GOVERNMENT_TOP_N] + private_ranked[:_PRIVATE_TOP_N]
 
@@ -292,7 +265,7 @@ def _parse_tinyfish_ranking_response(response):
     if not isinstance(payload, list):
         raise ValueError("TinyFish ranking response is not a list")
 
-    ranked = []
+    ranked: list[SchemeModel] = []
     for item in payload:
         if not isinstance(item, dict):
             continue
@@ -301,23 +274,38 @@ def _parse_tinyfish_ranking_response(response):
         if not name:
             continue
 
-        priority = item.get("priority", 0)
-        try:
-            priority = int(priority)
-        except (TypeError, ValueError):
-            priority = 0
-
         reason = str(item.get("reason", "")).strip()
 
-        ranked.append({
-            "name": name,
-            "reason": reason,
-            "priority": priority,
-            "match_score": priority,
-            "match_reasons": [reason] if reason else [],
-        })
+        raw_priority = item.get("priority", "")
+        tinyfish_priority = str(raw_priority or "").strip().lower()
+        try:
+            match_score = int(raw_priority)
+        except (TypeError, ValueError):
+            priority_map = {"low": 1, "medium": 3, "high": 5}
+            match_score = priority_map.get(tinyfish_priority, 0)
 
-    ranked.sort(key=lambda s: (-s.get("priority", 0), s.get("name", "").lower()))
+        if tinyfish_priority.isdigit():
+            numeric_priority = int(tinyfish_priority)
+            if numeric_priority >= 4:
+                tinyfish_priority = "high"
+            elif numeric_priority >= 2:
+                tinyfish_priority = "medium"
+            elif numeric_priority > 0:
+                tinyfish_priority = "low"
+            else:
+                tinyfish_priority = ""
+
+        ranked.append(
+            SchemeModel(
+                name=name,
+                match_score=match_score,
+                match_reasons=[reason] if reason else [],
+                tinyfish_reason=reason,
+                tinyfish_priority=tinyfish_priority,
+            )
+        )
+
+    ranked.sort(key=lambda s: (-s.match_score, s.name.lower()))
     return ranked[:_TOP_N]
 
 
@@ -355,20 +343,19 @@ def _build_tinyfish_prompt(profile, scheme_payload):
     )
 
 
-def _tinyfish_rank(profile, schemes):
+def _tinyfish_rank(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     """Use TinyFish to rank schemes. Raises on failure."""
     top_candidates = schemes[:_MAX_TINYFISH_INPUT]
     scheme_payload = [
         {
-            "name": _scheme_value(scheme, "name", ""),
-            "state": _scheme_value(scheme, "state", profile.get("state", "")),
-            "category": _scheme_value(scheme, "category", profile.get("category", "")),
-            "income_limit": _scheme_value(scheme, "income_limit", None),
-            "course_level": _scheme_value(scheme, "course_level", profile.get("course_level", "")),
-            "provider": _scheme_value(scheme, "provider", ""),
-            "eligibility": _scheme_value(scheme, "eligibility", ""),
-            "apply_link": _scheme_value(scheme, "apply_link", ""),
-            "type": _scheme_value(scheme, "type", ""),
+            "name": scheme.name,
+            "state": scheme.state or profile.get("state", ""),
+            "category": scheme.category or profile.get("category", ""),
+            "income_limit": scheme.income_limit,
+            "course_level": scheme.course_level or profile.get("course_level", ""),
+            "provider": scheme.provider,
+            "eligibility": scheme.eligibility,
+            "apply_link": scheme.apply_link,
             "source_type": _source_type(scheme),
         }
         for scheme in top_candidates
@@ -391,24 +378,29 @@ def _tinyfish_rank(profile, schemes):
         raise ValueError("TinyFish returned no ranked schemes")
 
     source_lookup = {
-        str(_scheme_value(candidate, "name", "")).strip().lower(): _copy_scheme_fields(candidate)
+        candidate.name.strip().lower(): _copy_scheme_fields(candidate)
         for candidate in top_candidates
-        if _scheme_value(candidate, "name", "")
+        if candidate.name
     }
+
+    merged_ranked = []
     for item in ranked:
-        source_entry = source_lookup.get(str(item.get("name", "")).strip().lower())
+        source_entry = source_lookup.get(item.name.strip().lower())
         if not source_entry:
-            item["source_type"] = item.get("source_type", "government")
+            item.source_type = item.source_type or "government"
+            merged_ranked.append(item)
             continue
-        for key, value in source_entry.items():
-            if key not in item:
-                item[key] = value
-        item["source_type"] = source_entry.get("source_type", _source_type(source_entry))
+        source_entry.match_score = item.match_score
+        source_entry.match_reasons = item.match_reasons
+        source_entry.tinyfish_reason = item.tinyfish_reason
+        source_entry.tinyfish_priority = item.tinyfish_priority
+        source_entry.source_type = source_entry.source_type or _source_type(source_entry)
+        merged_ranked.append(source_entry)
 
-    return ranked
+    return merged_ranked
 
 
-def rank_schemes(profile, schemes):
+def rank_schemes(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     """Rank eligible schemes with TinyFish, falling back to source-aware rule-based ranking."""
     if not schemes:
         return []
@@ -420,7 +412,7 @@ def rank_schemes(profile, schemes):
         return _rule_based_rank_with_profile(profile, schemes)
 
 
-def format_ranked_output(ranked_schemes):
+def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
     """Format ranked schemes into a styled terminal output."""
     if not ranked_schemes:
         return "No eligible schemes found."
@@ -429,7 +421,7 @@ def format_ranked_output(ranked_schemes):
     for scheme in ranked_schemes:
         source_type = _source_type(scheme)
         prefix = "[PVT]" if source_type == "private" else "[GOV]"
-        display_names.append(f"{prefix} {str(_scheme_value(scheme, 'name', '')).strip()}")
+        display_names.append(f"{prefix} {scheme.name.strip()}")
 
     max_name_len = max(len(name) for name in display_names)
     content_width = max(max_name_len + 20, 44)
@@ -444,9 +436,9 @@ def format_ranked_output(ranked_schemes):
     for i, scheme in enumerate(ranked_schemes, 1):
         source_type = _source_type(scheme)
         prefix = "[PVT]" if source_type == "private" else "[GOV]"
-        name = str(_scheme_value(scheme, "name", "")).strip()
-        score = _scheme_value(scheme, "priority", _scheme_value(scheme, "match_score", 0))
-        reasons = _ensure_reason_list(_scheme_value(scheme, "match_reasons", []))
+        name = scheme.name.strip()
+        score = scheme.match_score
+        reasons = _ensure_reason_list(scheme.match_reasons)
 
         score_str = f"(score: {score})"
         name_line = f" {i}. {prefix} {name}"
