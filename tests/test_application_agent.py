@@ -58,6 +58,18 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
         self.assertIn("Avoid redirecting to a different external portal or domain", goal)
         self.assertIn("Stop before the authenticated flow", goal)
 
+    def test_extract_only_goal_includes_strategy_constraints(self):
+        goal = _build_goal(
+            "Portal Scholarship",
+            base_url="https://example.com/login",
+            execution_strategy="extract_only",
+        )
+
+        self.assertIn("Execution strategy:", goal)
+        self.assertIn("Extract requirements only", goal)
+        self.assertIn("Do not attempt a full application flow", goal)
+        self.assertIn("Stop immediately when login, registration, or OTP is required", goal)
+
     def test_falls_back_to_neutral_url_when_apply_link_missing(self):
         url = _resolve_application_url("")
         goal = _build_goal("NSP Scheme", base_url=url)

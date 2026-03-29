@@ -469,13 +469,32 @@ def handle_human_handoff(result, profile, open_browser=True):
     print("==============================")
 
 
-def _build_goal(scheme_name, profile=None, base_url=None):
+def _build_goal(scheme_name, profile=None, base_url=None, execution_strategy="full_apply"):
     profile = profile or {}
     target_url = _resolve_application_url(base_url)
     name = profile.get("full_name") or profile.get("name") or "Atharv"
     state = profile.get("state") or "J&K"
     category = profile.get("category") or "OBC"
     income = profile.get("annual_income") or profile.get("income") or 250000
+
+    if execution_strategy == "extract_only":
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Extract requirements only\n"
+            "- Do not attempt a full application flow\n"
+            "- Stop immediately when login, registration, or OTP is required\n\n"
+        )
+    elif execution_strategy == "manual_assist":
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Gather high-value visible guidance only\n"
+            "- Do not chase deep redirects or authenticated flows\n\n"
+        )
+    else:
+        strategy_block = (
+            "Execution strategy:\n"
+            "- Prefer full pre-auth application progress when direct form interaction is possible\n\n"
+        )
 
     return (
         "You are an autonomous web agent helping a student prepare for a scholarship application.\n\n"
@@ -486,6 +505,7 @@ def _build_goal(scheme_name, profile=None, base_url=None):
         f"- State: {state}\n"
         f"- Category: {category}\n"
         f"- Income: {income}\n\n"
+        f"{strategy_block}"
         "Instructions:\n"
         f"1. Start from {target_url} and prefer to stay on this site or portal when possible\n"
         "2. Prefer workflows where the application form is directly accessible without login\n"
@@ -518,7 +538,14 @@ def _build_goal(scheme_name, profile=None, base_url=None):
     )
 
 
-def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, apply_link=None, open_browser=True):
+def run_tinyfish_application_agent(
+    scheme_name,
+    profile=None,
+    api_key=None,
+    apply_link=None,
+    execution_strategy="full_apply",
+    open_browser=True,
+):
     """Run TinyFish automation for a selected scholarship scheme."""
     resolved_api_key = api_key or os.getenv("TINYFISH_API_KEY")
     target_url = _resolve_application_url(apply_link)
@@ -552,7 +579,12 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None, appl
 
     payload = {
         "url": target_url,
-        "goal": _build_goal(scheme_name, profile=profile, base_url=target_url),
+        "goal": _build_goal(
+            scheme_name,
+            profile=profile,
+            base_url=target_url,
+            execution_strategy=execution_strategy,
+        ),
     }
 
     request_body = json.dumps(payload).encode("utf-8")

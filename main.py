@@ -37,6 +37,20 @@ _DEPENDENCY_MODULES = {
     "playwright": "playwright",
 }
 _REPORTED_MISSING_DEPENDENCIES = set()
+_LOGIN_WALL_KEYWORDS = (
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "otp",
+    "one time password",
+    "register",
+)
+_APPLY_KEYWORDS = (
+    "apply",
+    "application",
+    "form",
+)
 _SITE_CONFIGS = {
     "nsp": {
         "label": "NSP",
@@ -133,15 +147,75 @@ def _resolve_portal_url(selected):
 
 def _build_manual_handoff_payload(selected):
     apply_link = _resolve_portal_url(selected)
+    return _build_strategy_handoff_payload(selected, "manual_assist", "", apply_link=apply_link)
+
+
+def _scheme_signal_text(selected):
+    parts = [
+        getattr(selected, "name", ""),
+        getattr(selected, "eligibility", ""),
+        getattr(selected, "status", ""),
+        getattr(selected, "apply_link", ""),
+        getattr(selected, "tinyfish_reason", ""),
+    ]
+    return " ".join(str(part).strip().lower() for part in parts if part)
+
+
+def choose_execution_strategy(scheme):
+    status = str(getattr(scheme, "status", "") or "").strip().lower()
+    signal_text = _scheme_signal_text(scheme)
+    has_apply_link = bool(str(getattr(scheme, "apply_link", "") or "").strip())
+
+    if status in {"closed", "expired"} or "closed" in signal_text or "expired" in signal_text:
+        return "skip", "Scheme is marked closed or expired."
+
+    if any(keyword in signal_text for keyword in _LOGIN_WALL_KEYWORDS):
+        return "extract_only", "Login or OTP wall detected; extract visible requirements only."
+
+    if has_apply_link and any(keyword in signal_text for keyword in _APPLY_KEYWORDS):
+        return "full_apply", "Direct application signal detected from the selected portal."
+
+    if has_apply_link:
+        return "full_apply", "Apply link is available and no login wall was detected."
+
+    return "manual_assist", "No direct apply path detected; using manual assist."
+
+
+def _build_strategy_handoff_payload(selected, strategy, reason, apply_link=""):
+    apply_link = str(apply_link or _resolve_portal_url(selected) or "").strip()
+    if strategy == "skip":
+        steps = [
+            f"Skip automation for {selected.name}",
+            "The scheme appears closed or expired",
+            "Verify deadline and portal status manually before retrying",
+        ]
+    elif strategy == "extract_only":
+        steps = [
+            f"Open the selected page for {selected.name}",
+            "Inspect visible requirements and form fields before authentication",
+            "Stop when login, registration, or OTP is required and continue manually",
+        ]
+    elif strategy == "full_apply":
+        steps = [
+            f"Open the selected application page for {selected.name}",
+            "Try the direct pre-auth application workflow first",
+            "Stop and continue manually if login or OTP becomes mandatory",
+        ]
+    else:
+        steps = [
+            "Open the scholarship portal",
+            "Review the visible application path manually",
+            f"Search for and continue the application for {selected.name}",
+        ]
+
+    if reason:
+        steps.append(f"Decision reason: {reason}")
+
     return {
         "apply_link": apply_link,
         "fields": [],
         "documents": [],
-        "steps": [
-            "Open the scholarship portal",
-            "Complete login or OTP manually",
-            f"Search for and continue the application for {selected.name}",
-        ],
+        "steps": steps,
         "form_detected": False,
     }
 
@@ -239,9 +313,23 @@ def _run_discovery_handoff(
     run_local_portal_flow=None,
 ):
     apply_link = _resolve_portal_url(selected)
-    manual_payload = _build_manual_handoff_payload(selected)
+    strategy, reason = choose_execution_strategy(selected)
+    logger.info(f"[AGENT] Strategy selected: {strategy}")
+    logger.info(f"[AGENT] Reason: {reason}")
+    manual_payload = _build_strategy_handoff_payload(selected, strategy, reason, apply_link=apply_link)
+
+    if strategy == "skip":
+        print("Skipping execution because the selected scheme appears closed or expired.")
+        handle_human_handoff(manual_payload, profile, open_browser=False)
+        return
 
     if handoff_mode == "local":
+        if strategy in {"extract_only", "manual_assist"}:
+            if apply_link:
+                print("Opening local preview...")
+                open_local_preview(apply_link)
+            handle_human_handoff(manual_payload, profile, open_browser=False)
+            return
         if run_local_portal_flow and _site_config_for_scheme(selected) and run_local_portal_flow(selected):
             return
         if apply_link:
@@ -256,12 +344,17 @@ def _run_discovery_handoff(
         print("Opening local preview...")
         open_local_preview(apply_link)
 
+    if strategy == "manual_assist":
+        handle_human_handoff(manual_payload, profile, open_browser=False)
+        return
+
     if TINYFISH_AVAILABLE:
         try:
             run_tinyfish_application_agent(
                 selected.name,
                 profile=profile,
                 apply_link=apply_link,
+                execution_strategy=strategy,
                 open_browser=not preview_mode,
             )
         except Exception as e:
