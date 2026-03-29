@@ -1,105 +1,119 @@
 <div align="center">
   <h1>🚀 FundPilot</h1>
-  <p><b>Autonomous Discovery & Application Agent for Grants, Scholarships & Schemes</b></p>
-  <p>
-    Built for the TinyFish Hackathon 🐠
-  </p>
+  <p><b>Autonomous Application & Discovery Engine for Grants, Scholarships, and Schemes</b></p>
 </div>
 
 ---
 
-**FundPilot** is an intelligent execution engine that autonomously discovers, evaluates, and applies to funding opportunities—whether you're a student looking for scholarships or a founder seeking startup grants. 
+**FundPilot** is an intelligent execution engine designed to autonomously navigate, evaluate, and apply for complex funding opportunities. Built to bridge the gap between discovery and execution, it handles everything from student scholarships to tier-1 startup grants. 
 
-Instead of blind automation, FundPilot acts as a strategic co-pilot. It navigates complex government portals and private platforms, determines the optimal application strategy, and seamlessly bridges the gap between discovery and execution.
+Unlike traditional RPA or blind web scrapers, FundPilot uses an intent-driven architecture to dynamically adapt to varying authentication walls, portal structures, and application forms.
 
-## ✨ What It Does
+## ✨ Core Capabilities
 
-1. 🔍 **Multi-Source Discovery**: Scans diverse funding sources, from government platforms (NSP, Startup India) to private portals (Buddy4Study).
-2. 🎯 **Intelligent Matching**: Cross-references opportunities against your detailed profile (demographics, income, business stage, education).
-3. 🥇 **AI-Driven Ranking**: Evaluates and scores schemes using TinyFish AI, prioritizing deadlines and high-probability matches.
-4. 🧠 **Strategic Execution Engine**: Makes real-time decisions on the best way to handle each opportunity:
-   - 🟢 `FULL_APPLY`: Direct form available? The agent auto-fills and submits.
-   - 🟡 `EXTRACT_ONLY`: Hits a login wall or complex auth? Gathers full requirements, eligibility, and links, then gracefully alerts you.
-   - 🔴 `SKIP`: Expired or irrelevant schemes are aggressively filtered out.
-5. 🤝 **Frictionless Handoff**: Generates a pre-filled, comprehensive guide containing the exact steps, required documents, and direct links for any manual steps.
+1. 🔍 **Multi-Source Discovery Orchestration**: Simultaneously queries and scrapes diverse data sources, from strict government portals (e.g., NSP, Startup India) to private enterprise platforms.
+2. 🎯 **Algorithmic Eligibility Matching**: Cross-references parsed schemes against a structured user profile (`profile.json`) to accurately determine eligibility before wasting computational cycles.
+3. 🥇 **AI-Driven Ranking System**: Scores schemes dynamically using TinyFish AI and heuristic models, prioritizing actionable applications with approaching deadlines.
+4. 🧠 **Adaptive Execution Strategy**: Evaluates the application path in real-time to determine the optimal interaction mode:
+   - 🟢 `FULL_APPLY`: Automates the entire form submission end-to-end.
+   - 🟡 `EXTRACT_ONLY`: Detects complex auth (OTP/Captcha) or login walls, extracts requirements, and transitions seamlessly to intelligence-gathering mode.
+   - 🔴 `SKIP`: Pre-emptively filters out closed, expired, or irrelevant schemes.
+5. 🤝 **Deterministic Handoffs**: Generates structured, pre-filled guides with extracted fields and fallback manual links when fully autonomous execution is intentionally bypassed.
 
 ## 🚀 Quick Start
 
 ### 1. Installation
 
+Requires Python 3.11+.
+
 ```bash
 git clone https://github.com/yourusername/fundpilot.git
 cd fundpilot
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configuration
+### 2. Identity Configuration
 
-Create a `.env` file in the root directory and add your TinyFish API key:
-
-```env
-TINYFISH_API_KEY=your_key_here
-```
-
-Set up your profile in `profile.json`. (Supports both student and startup founder profiles):
+Set up your `profile.json` to define the target applicant (supports both student and founder personas):
 
 ```json
 {
-  "full_name": "Your Name / Startup Name",
-  "state": "Your State",
-  "category": "OBC / General / SC / ST / Startup",
+  "full_name": "Applicant Name / Startup Name",
+  "state": "State",
+  "category": "General / OBC / SC / ST / Startup",
   "annual_income": 250000,
   "course_level": "undergraduate",
   "funding_type": ["scholarship", "startup_grant"]
 }
 ```
 
-### 3. Usage
+Configure your environment variables securely in `.env`:
 
-**Run standard discovery mode:**
+```env
+TINYFISH_API_KEY=your_key_here
+```
+
+### 3. Execution Interfaces
+
+**Autonomous Target Discovery:**
+Initiates the scrape → match → rank cycle.
 ```bash
 python main.py --discover --mode agent
 ```
 
-**Run Demo Mode:**
-*(Prioritizes low-friction, direct-apply schemes for seamless live demonstrations without complex government OTPs)*
+**Targeted Application Fallback (Local Flow):**
+Forces the system into a local browser context using Playwright.
 ```bash
-python main.py --discover --mode demo --demo-mode
+python main.py --apply
 ```
 
-## 🏗️ Architecture Under the Hood
+**View Application History:**
+Reads local state persistence via `applications.db`.
+```bash
+python main.py --history
+```
+
+*(Note: Use the `--demo-mode` flag combined with `--discover` for curated application paths that prioritize live demonstrations by bypassing rigid government portals.)*
+
+## 🏗️ System Architecture
+
+FundPilot utilizes a modular, decoupled structure allowing for highly robust runtimes and easy scalability.
 
 ```text
 fundpilot/
-├── main.py                  # CLI entry point & global strategy orchestrator
+├── main.py                  # Stateful CLI & execution orchestrator
+├── applications.db          # Local SQLite persistence for tracking state
 ├── core/
-│   ├── application_agent.py # TinyFish-powered form execution
+│   ├── application_agent.py # TinyFish-powered form execution subengine
 │   └── discovery/
 │       ├── ranking.py       # Algorithmic & AI-based scheme scoring
-│       ├── eligibility.py   # Profile-to-scheme matching engine
-│       └── multi_source.py  # Orchestrator for various portal scrapers
-├── integrations/
-│   └── tinyfish_client.py   # Wrapper for TinyFish SDK interactions
-├── schemas/
-│   └── scheme_model.py      # Strict Pydantic data models for validation
-└── utils/                   # Standard loggers, trackers, and helpers
+│       ├── eligibility.py   # Deterministic profile-to-scheme matching
+│       └── multi_source.py  # Portal scraper multiplexer
+├── executor/                # Browser automation (Playwright local fallback)
+├── extractor/               # DOM traversal and field extraction logic
+├── mapper/                  # Profile schemas -> Form field mappers
+├── schemas/                 # Strict Pydantic validation models
+├── sites/                   # Deterministic portal configs (NSP, Startup India)
+└── utils/                   # Telemetry, trackers, and structured loggers
 ```
 
-## 🛠️ Key Design Decisions
+## 🛠️ Key Design Principles
 
-- **Intent-Driven Execution**: The agent doesn't just click blindly; it explicitly decides *how* to approach a form based on context.
-- **Graceful Auth Handling**: It detects login boundaries and OTP walls, switching seamlessly into intelligence-gathering mode rather than failing.
-- **Optimized Demo Path**: Easily toggleable modes to bypass rigid government portals in favor of smooth, private applications during showcases.
-- **Agnostic Sourcing**: Built to aggregate and rank funding from a vast array of sources, preventing single-platform dependency.
+- **Intent-Driven Over Deterministic Scripting**: Relies on semantic signals rather than rigid CSS selectors to navigate forms, preventing silent failures on UI updates.
+- **Fail-Safe Auth Handling**: Intentionally short-circuits execution before strict auth boundaries (like CAPTCHAs or OTPs) to prevent bot blacklisting, escalating gracefully to the human operator.
+- **Pluggable Integrations**: The `sites/` directory allows for immediate integration of new funding platforms without modifying the core orchestration logic.
 
-## 💻 Tech Stack
+## 💻 Tech Stack & Substrate
 
-- **[TinyFish AI](https://tinyfish.ai)** — Cognitive web automation & intelligent ranking
-- **[Playwright](https://playwright.dev)** — Bulletproof browser automation fallback
+- **[TinyFish AI](https://tinyfish.ai)** — Cognitive web automation & heuristic ranking
+- **[Playwright](https://playwright.dev)** — Headless browser execution environment
 - **[Pydantic](https://docs.pydantic.dev)** — Type-safe data validation
-- **Python 3.11+** — Core runtime
+- **[BeautifulSoup4](https://beautiful-soup-4.readthedocs.io)** — HTML parsing
+- **SQLite3** — Embedded state management
 
 ---
 <div align="center">
-  <i>Empowering builders and learners to secure funding without the friction.</i>
+  <i>FundPilot: Bridging the execution gap in funding discovery.</i>
 </div>
