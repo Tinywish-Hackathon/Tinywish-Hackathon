@@ -75,6 +75,34 @@ def _normalize_bool(value):
     return bool(value)
 
 
+def _safe_json_loads(value):
+    if not isinstance(value, str):
+        return value
+
+    cleaned = _strip_code_fence(value)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return value
+
+
+def _extract_final_event_payload(data):
+    final_keys = {"steps", "fields", "documents", "apply_link"}
+
+    if not isinstance(data, dict):
+        return None
+
+    if any(key in data for key in final_keys):
+        return data
+
+    content = data.get("content")
+    content = _safe_json_loads(content)
+    if isinstance(content, dict) and any(key in content for key in final_keys):
+        return content
+
+    return None
+
+
 def _parse_application_result(result, scheme_name):
     default = {
         "apply_link": "",
@@ -184,6 +212,7 @@ def handle_human_handoff(result, profile):
     apply_link = str(safe_result.get("apply_link", "")).strip()
     if apply_link:
         print(f"\nOpening application portal: {apply_link}")
+        logger.info("[APPLICATION] Opening portal for manual continuation")
         try:
             webbrowser.open(apply_link)
         except Exception as e:
@@ -325,15 +354,12 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
 
     final_payload = None
     last_parsed_data = None
+    parsed_events = []
 
     try:
         with request.urlopen(req, timeout=180) as response:
             for event_name, raw_data in _iter_sse_events(response):
-                parsed_data = raw_data
-                try:
-                    parsed_data = json.loads(raw_data)
-                except Exception:
-                    pass
+                parsed_data = _safe_json_loads(raw_data)
 
                 last_parsed_data = parsed_data
 
@@ -341,6 +367,11 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
                 logger.info(f"[APPLICATION] Event type: {event_name}")
 
                 if isinstance(parsed_data, dict):
+                    event_type = str(parsed_data.get("type", "")).strip().upper()
+                    if event_type == "HEARTBEAT":
+                        logger.info("[APPLICATION] Skipping heartbeat")
+                        continue
+
                     log_text = (
                         parsed_data.get("message")
                         or parsed_data.get("status")
@@ -350,10 +381,28 @@ def run_tinyfish_application_agent(scheme_name, profile=None, api_key=None):
                     if log_text:
                         logger.info(f"[APPLICATION] {log_text}")
 
-                if event_name in ["completed", "result"]:
-                    final_payload = parsed_data
-                elif event_name == "message":
-                    pass
+                    parsed_events.append(parsed_data)
+
+                    if event_type == "RESULT":
+                        final_payload = _safe_json_loads(parsed_data.get("content", parsed_data))
+                        logger.info("[APPLICATION] Result captured")
+                        break
+
+                    candidate = _extract_final_event_payload(parsed_data)
+                    if candidate is not None:
+                        final_payload = candidate
+                        logger.info("[APPLICATION] Result captured")
+                        break
+                elif str(event_name).strip().lower() == "message":
+                    parsed_events.append(parsed_data)
+
+            if not final_payload:
+                for event in reversed(parsed_events):
+                    candidate = _extract_final_event_payload(event)
+                    if candidate is not None:
+                        final_payload = candidate
+                        logger.info("[APPLICATION] Using fallback parsed result")
+                        break
 
             if not final_payload:
                 logger.warning("No final result event found, using last parsed data")

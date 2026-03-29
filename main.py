@@ -1,5 +1,6 @@
 import sys
 import argparse
+import os
 import config
 from executor.browser import start_browser, wait_for_user_input, fill_field
 from executor.actions import (
@@ -13,14 +14,18 @@ from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
 from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
+logger = get_logger("main")
 from config import Config
 
-if not Config.TINYFISH_API_KEY:
-    raise ValueError("Missing TINYFISH_API_KEY in .env file")
+TINYFISH_AVAILABLE = bool(os.getenv("TINYFISH_API_KEY"))
 
-print("[CONFIG] TinyFish key loaded:", bool(Config.TINYFISH_API_KEY))
-
-logger = get_logger("main")
+if not TINYFISH_AVAILABLE:
+    logger.warning(
+        "[CONFIG] TINYFISH_API_KEY not set. TinyFish ranking and application intelligence "
+        "will be unavailable. Running in offline mode."
+    )
+else:
+    print("[CONFIG] TinyFish key loaded:", True)
 
 
 
@@ -30,7 +35,7 @@ def wait(msg):
 
 def run_discovery():
     """Run scheme discovery mode: scrape → match → rank → display."""
-    from core.application_agent import run_tinyfish_application_agent
+    from core.application_agent import handle_human_handoff, run_tinyfish_application_agent
     from core.discovery.eligibility import find_eligible_schemes
     from core.discovery.multi_source import (
         merge_schemes,
@@ -41,7 +46,7 @@ def run_discovery():
         scrape_scholarships360,
         scrape_we_make_scholars,
     )
-    from core.discovery.ranking import rank_schemes, format_ranked_output
+    from core.discovery.ranking import _rule_based_rank, rank_schemes, format_ranked_output
 
     profile = load_profile(config.PROFILE_PATH)
 
@@ -67,7 +72,11 @@ def run_discovery():
         print("Tip: Check state/category spelling in profile.json")
         return
 
-    ranked = rank_schemes(profile, eligible)
+    if TINYFISH_AVAILABLE:
+        ranked = rank_schemes(profile, eligible)
+    else:
+        print("Note: TinyFish ranking unavailable. Using rule-based ranking.")
+        ranked = _rule_based_rank(eligible)
     print(format_ranked_output(ranked))
 
     # Selection loop
@@ -82,11 +91,28 @@ def run_discovery():
                 selected = ranked[n - 1]
                 print(f"\nSelected: {selected['name']}")
                 print("Handing off to application agent...")
-                try:
-                    run_tinyfish_application_agent(selected["name"], profile=profile)
-                except Exception as e:
-                    logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
-                    print("Application agent failed. Check logs for details.")
+                if TINYFISH_AVAILABLE:
+                    try:
+                        run_tinyfish_application_agent(selected["name"], profile=profile)
+                    except Exception as e:
+                        logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
+                        print("Application agent failed. Check logs for details.")
+                else:
+                    print("TinyFish application intelligence unavailable. Opening portal directly.")
+                    handle_human_handoff(
+                        {
+                            "apply_link": selected.get("apply_link") or config.START_URL,
+                            "fields": [],
+                            "documents": [],
+                            "steps": [
+                                "Open the scholarship portal",
+                                "Complete login or OTP manually",
+                                f"Search for and continue the application for {selected['name']}",
+                            ],
+                            "form_detected": False,
+                        },
+                        profile,
+                    )
                 return
             else:
                 print(f"Please enter a number between 1 and {len(ranked)}")
