@@ -11,6 +11,7 @@ sys.modules.setdefault("tinyfish", tinyfish_stub)
 
 from core.application_agent import (
     _build_goal,
+    _finalize_application_result,
     _resolve_application_stream,
     _resolve_application_url,
     handle_human_handoff,
@@ -52,7 +53,10 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
 
         self.assertEqual(url, "https://wis.ntu.edu.sg/apply")
         self.assertIn("Start URL: https://wis.ntu.edu.sg/apply", goal)
-        self.assertIn("Navigate to https://wis.ntu.edu.sg/apply", goal)
+        self.assertIn("Start from https://wis.ntu.edu.sg/apply", goal)
+        self.assertIn("Prefer workflows where the application form is directly accessible without login", goal)
+        self.assertIn("Avoid redirecting to a different external portal or domain", goal)
+        self.assertIn("Stop before the authenticated flow", goal)
 
     def test_falls_back_to_neutral_url_when_apply_link_missing(self):
         url = _resolve_application_url("")
@@ -60,6 +64,42 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
 
         self.assertEqual(url, "https://example.com/")
         self.assertIn("Start URL: https://example.com/", goal)
+
+
+class ApplicationResultFinalizationTests(unittest.TestCase):
+    def test_keeps_requested_url_when_external_redirect_hits_login_wall(self):
+        result = _finalize_application_result(
+            {
+                "apply_link": "https://scholarships.gov.in/",
+                "fields": ["Aadhaar", "DOB"],
+                "documents": ["Income Certificate"],
+                "steps": ["Login to continue the application", "Enter OTP sent to mobile"],
+                "form_detected": False,
+            },
+            "Buddy Scholarship",
+            requested_url="https://www.buddy4study.com/scholarship/demo",
+        )
+
+        self.assertEqual(result["apply_link"], "https://www.buddy4study.com/scholarship/demo")
+        self.assertEqual(result["fields"], ["Aadhaar", "DOB"])
+        self.assertFalse(result["form_detected"])
+        self.assertIn("Stop here and complete login or OTP manually before continuing.", result["steps"])
+
+    def test_preserves_direct_form_link_when_form_is_accessible(self):
+        result = _finalize_application_result(
+            {
+                "apply_link": "https://portal.example.com/apply",
+                "fields": ["Name"],
+                "documents": [],
+                "steps": ["Open application form"],
+                "form_detected": True,
+            },
+            "Direct Portal Scheme",
+            requested_url="https://listing.example.com/scheme",
+        )
+
+        self.assertEqual(result["apply_link"], "https://portal.example.com/apply")
+        self.assertTrue(result["form_detected"])
 
 
 class BrowserLaunchTests(unittest.TestCase):

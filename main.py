@@ -278,7 +278,7 @@ def _run_discovery_handoff(
     handle_human_handoff(manual_payload, profile, open_browser=not preview_mode)
 
 
-def run_discovery(handoff_mode="agent", use_cache=True):
+def run_discovery(handoff_mode="agent", use_cache=True, demo_mode=False):
     """Run scheme discovery mode: scrape → match → rank → display."""
     check_dependencies(
         require_tinyfish=handoff_mode in {"agent", "hybrid"},
@@ -314,11 +314,14 @@ def run_discovery(handoff_mode="agent", use_cache=True):
         print("Tip: Check state/category spelling in profile.json")
         return
 
+    if demo_mode:
+        print("[CONFIG] Demo mode enabled: prioritizing open, direct, lower-friction application flows.")
+
     if TINYFISH_AVAILABLE:
-        ranked = rank_schemes(profile, eligible)
+        ranked = rank_schemes(profile, eligible, demo_mode=demo_mode)
     else:
         print("Note: TinyFish ranking unavailable. Using rule-based ranking.")
-        ranked = _rule_based_rank(eligible)
+        ranked = _rule_based_rank(eligible, demo_mode=demo_mode)
     print(format_ranked_output(ranked))
 
     # Selection loop
@@ -385,6 +388,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--no-cache", action="store_true",
                         help="Force fresh scrape (use with --discover)")
+    parser.add_argument(
+        "--demo-mode",
+        action="store_true",
+        help="Prioritize open schemes, private portals, and direct forms for a stronger live demo",
+    )
     args = parser.parse_args()
 
     if args.history:
@@ -403,7 +411,7 @@ if __name__ == "__main__":
         if args.no_cache:
             from core.discovery import nsp_scraper
             nsp_scraper._FORCE_REFRESH = True
-        run_discovery(handoff_mode=args.mode, use_cache=not args.no_cache)
+        run_discovery(handoff_mode=args.mode, use_cache=not args.no_cache, demo_mode=args.demo_mode)
     else:
         if args.mode != "agent":
             print("[CONFIG] --mode only affects --discover. Running local apply flow.")

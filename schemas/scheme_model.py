@@ -22,12 +22,16 @@ class SchemeModel(BaseModel):
     course_level: str = ""
     provider: str = ""
     apply_link: str = ""
+    deadline: str = ""
+    status: str = ""
     match_score: int = 0
     match_reasons: list[str] = Field(default_factory=list)
     tinyfish_reason: str = ""
     tinyfish_priority: str = ""
+    applyability_score: int = 0
+    is_applyable: bool = False
 
-    @field_validator("income_limit", "match_score", mode="before")
+    @field_validator("income_limit", "match_score", "applyability_score", mode="before")
     @classmethod
     def _coerce_int(cls, value: Any) -> int:
         if value in (None, ""):
@@ -54,6 +58,11 @@ class SchemeModel(BaseModel):
             return "private"
         return "government"
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value: Any) -> str:
+        return str(value or "").strip().lower()
+
     @field_validator("tinyfish_priority", mode="before")
     @classmethod
     def _normalize_tinyfish_priority(cls, value: Any) -> str:
@@ -73,6 +82,17 @@ class SchemeModel(BaseModel):
             "eligibilityText": "eligibility",
             "income": "income_limit",
             "type": "source_type",
+            "deadlineText": "deadline",
+            "deadline_text": "deadline",
+            "last_date": "deadline",
+            "lastDate": "deadline",
+            "closing_date": "deadline",
+            "closingDate": "deadline",
+            "end_date": "deadline",
+            "endDate": "deadline",
+            "deadline_status": "status",
+            "deadlineStatus": "status",
+            "application_status": "status",
         }
 
         for source_key, target_key in aliases.items():
