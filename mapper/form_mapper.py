@@ -1,4 +1,31 @@
+import os
+
 import config
+from utils.logger import get_logger
+
+
+logger = get_logger("form_mapper")
+
+
+def _mask_aadhaar(aadhaar_number):
+    digits = "".join(ch for ch in str(aadhaar_number or "") if ch.isdigit())
+    if len(digits) >= 4:
+        return f"XXXX-XXXX-{digits[-4:]}"
+    return "XXXX-XXXX-XXXX"
+
+
+def _is_file_field(field_type):
+    return field_type == "file"
+
+
+def _get_document_path(label):
+    if "income_cert" in label or "income certificate" in label or "income cert" in label:
+        return getattr(config, "INCOME_CERT_PATH", "")
+    if "marksheet" in label or "mark sheet" in label:
+        return getattr(config, "MARKSHEET_PATH", "")
+    if "certificate" in label:
+        return getattr(config, "CERTIFICATE_PATH", getattr(config, "MARKSHEET_PATH", ""))
+    return ""
 
 def map_field(field_info, profile):
     """
@@ -6,11 +33,34 @@ def map_field(field_info, profile):
     returns a tuple of (mapped_key, value_to_fill) or (None, None)
     """
     label = (field_info.get("label") or field_info.get("placeholder") or field_info.get("name") or "").lower()
+    field_type = (field_info.get("type", "text") or "text").lower()
     
     if "aadhaar" in label or "adhar" in label:
-        return "aadhaar", config.AADHAAR_PATH
-    if "marksheet" in label or "mark sheet" in label or "certificate" in label:
-        return "marksheet", config.MARKSHEET_PATH
+        if _is_file_field(field_type):
+            return "aadhaar", config.AADHAAR_PATH
+
+        aadhaar_number = os.getenv("AADHAAR_NUMBER", "").strip()
+        if aadhaar_number:
+            logger.info(f"[MAPPER] Filling Aadhaar number: {_mask_aadhaar(aadhaar_number)}")
+        return "aadhaar", aadhaar_number
+
+    if (
+        "marksheet" in label
+        or "mark sheet" in label
+        or "certificate" in label
+        or "income_cert" in label
+        or "income certificate" in label
+        or "income cert" in label
+    ):
+        if not _is_file_field(field_type):
+            return None, None
+
+        document_path = _get_document_path(label)
+        if document_path:
+            if "income_cert" in label or "income certificate" in label or "income cert" in label:
+                return "income_cert", document_path
+            return "marksheet", document_path
+        return None, None
 
     # Text mapping
     if "name" in label:
