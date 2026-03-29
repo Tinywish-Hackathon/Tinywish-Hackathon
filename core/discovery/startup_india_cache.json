@@ -1,0 +1,58 @@
+[
+  {
+    "name": "Schemes and Policies",
+    "eligibility": "Startup India Regulatory Support Central Govt. Schemes and Policies Women Entrepreneurship Incubator Schemes Know your State/UT Startup Policies",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://www.startupindia.gov.in/content/sih/en/government-schemes.html#",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "MeitY Startup Hub",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://msh.meity.gov.in/",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "DST Schemes",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://dst.gov.in/about-schemes",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "BIRAC Support for Startups",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://birac.nic.in/mii/BIRAC-Support-for-Startups.php",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "Compendium of Startup-related Schemes and Initiative",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://www.startupindia.gov.in/content/dam/invest-india/Templates/public/Draft%20of%20Compendium%20of%20Startup%20Specific%20Initiatives%20(1).pdf",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "State Startup Policy",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://www.startupindia.gov.in/content/sih/en/state-startup-policies.html",
+    "provider": "DPIIT"
+  },
+  {
+    "name": "Use Startup India Logo",
+    "eligibility": "",
+    "source": "Startup India",
+    "source_type": "government",
+    "apply_link": "https://www.startupindia.gov.in/content/sih/en/logo-form.html",
+    "provider": "DPIIT"
+  }
+]

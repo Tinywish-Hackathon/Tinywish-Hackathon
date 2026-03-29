@@ -1,10 +1,14 @@
 import os
+from importlib.util import find_spec
 
-from tinyfish import TinyFish
 from utils.logger import get_logger
 
 
 logger = get_logger("tinyfish_client")
+
+
+def is_tinyfish_installed() -> bool:
+    return find_spec("tinyfish") is not None
 
 
 def get_tinyfish_client():
@@ -13,12 +17,16 @@ def get_tinyfish_client():
     if not api_key:
         raise ValueError("Missing TINYFISH_API_KEY")
 
+    if not is_tinyfish_installed():
+        raise ImportError("tinyfish package is not installed")
+
+    from tinyfish import TinyFish
+
     client = TinyFish(api_key=api_key)
-    logger.debug(f"[TINYFISH] Client methods: {dir(client)}")
     return client
 
 
-def discover_tinyfish_run_method(client, active_logger=None, log_prefix="[TINYFISH]", warn_on_missing=True):
+def discover_tinyfish_run_method(client, active_logger=None, log_prefix="[AGENT]", warn_on_missing=True):
     resolved_logger = active_logger or logger
 
     for method_name in ["run", "agent_run", "run_agent", "create_run", "execute"]:

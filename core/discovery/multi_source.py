@@ -3,9 +3,12 @@
 import html
 import re
 from difflib import SequenceMatcher
+from typing import Any
 from urllib import request
 
 from core.discovery.nsp_scraper import get_nsp_schemes
+from core.discovery.startup_india_scraper import get_startup_india_schemes
+from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
 logger = get_logger("multi_source_discovery")
@@ -215,21 +218,37 @@ def scrape_nsp():
     return schemes
 
 
+def _dedupe_source_schemes(schemes):
+    """Deduplicate a single source list without emitting global merge totals."""
+    return merge_and_deduplicate([schemes], log_summary=False)
+
+
+def _scrape_source_with_optional_silence(urls, extract_fn, warning_prefix, silent_fail=False):
+    schemes = []
+
+    try:
+        for url in urls:
+            schemes.extend(extract_fn(url))
+    except Exception as e:
+        if not silent_fail:
+            logger.warning(f"{warning_prefix} {e}")
+        return []
+
+    return _dedupe_source_schemes(schemes)
+
+
 def scrape_myscheme():
     """Scrape scholarship-like scheme names from MyScheme."""
     urls = [
         "https://www.myscheme.gov.in/schemes",
         "https://www.myscheme.gov.in/search",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_schemes_from_html(_fetch_html(url), "MyScheme"))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] MyScheme fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_schemes_from_html(_fetch_html(url), "MyScheme"),
+        "[DISCOVERY] MyScheme fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] MyScheme: {len(schemes)} schemes")
     return schemes
 
@@ -248,7 +267,7 @@ def scrape_buddy4study():
         except Exception as e:
             logger.warning(f"[DISCOVERY] Buddy4Study fetch failed for {url}: {e}")
 
-    schemes = merge_schemes([schemes])
+    schemes = _dedupe_source_schemes(schemes)
     logger.info(f"[DISCOVERY] Buddy4Study: {len(schemes)} schemes")
     return schemes
 
@@ -259,15 +278,12 @@ def scrape_we_make_scholars():
         "https://www.wemakescholars.com/scholarships",
         "https://www.wemakescholars.com/other-scholarships",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "WeMakeScholars", url))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] WeMakeScholars fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_private_schemes_from_html(_fetch_html(url), "WeMakeScholars", url),
+        "[DISCOVERY] WeMakeScholars fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] WeMakeScholars: {len(schemes)} schemes")
     return schemes
 
@@ -278,15 +294,12 @@ def scrape_scholarships360():
         "https://scholarships360.org/scholarships/",
         "https://scholarships360.org/featured-scholarships/",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "Scholarships360", url))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] Scholarships360 fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_private_schemes_from_html(_fetch_html(url), "Scholarships360", url),
+        "[DISCOVERY] Scholarships360 fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] Scholarships360: {len(schemes)} schemes")
     return schemes
 
@@ -307,9 +320,46 @@ def scrape_international_scholarships():
         except Exception as e:
             logger.warning(f"[DISCOVERY] International Scholarships fetch failed for {url}: {e}")
 
-    schemes = merge_schemes([schemes])
+    schemes = _dedupe_source_schemes(schemes)
     logger.info(f"[DISCOVERY] International Scholarships: {len(schemes)} schemes")
     return schemes
+
+
+def scrape_startup_india(use_cache=True):
+    """Scrape Startup India government schemes for startup-focused profiles."""
+    try:
+        schemes = get_startup_india_schemes(use_cache=use_cache)
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Startup India scrape failed: {e}")
+        schemes = []
+
+    logger.info(f"[DISCOVERY] Startup India: {len(schemes)} schemes")
+    return schemes
+
+
+def _safe_source_result(scrape_fn, *args, **kwargs):
+    try:
+        result = scrape_fn(*args, **kwargs)
+    except Exception:
+        return []
+    return result or []
+
+
+def collect_source_lists(profile, use_cache=True):
+    """Build the discovery source list, including startup sources when applicable."""
+    source_lists = [
+        _safe_source_result(scrape_nsp),
+        _safe_source_result(scrape_myscheme),
+        _safe_source_result(scrape_buddy4study),
+        _safe_source_result(scrape_we_make_scholars),
+        _safe_source_result(scrape_scholarships360),
+        _safe_source_result(scrape_international_scholarships),
+    ]
+
+    if isinstance(profile, dict) and profile.get("startup"):
+        source_lists.append(_safe_source_result(scrape_startup_india, use_cache=use_cache))
+
+    return source_lists
 
 
 def _detail_score(entry):
@@ -340,28 +390,54 @@ def _is_similar_name(left, right, threshold=0.85):
     return SequenceMatcher(None, left_key, right_key).ratio() >= threshold
 
 
-def merge_schemes(all_sources):
-    """Merge multiple scheme lists, deduplicating by name similarity."""
-    merged = []
+def _scheme_to_dict(scheme: SchemeModel | dict[str, Any]) -> dict[str, Any]:
+    return SchemeModel.from_dict(scheme).model_dump()
+
+
+def _normalized_source_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalized_name_key(value: Any) -> str:
+    return _clean_text(value).lower()
+
+
+def _merge_key(entry: dict[str, Any]) -> tuple[str, str]:
+    return (
+        _normalized_name_key(entry.get("name")),
+        _normalized_source_key(entry.get("source")),
+    )
+
+
+def _resolved_source_type(entry: dict[str, Any]) -> str:
+    explicit = str(entry.get("source_type") or "").strip().lower()
+    if explicit in {"government", "private"}:
+        return explicit
+    if str(entry.get("type") or "").strip().lower() == "private":
+        return "private"
+    return "government"
+
+
+def merge_and_deduplicate(all_sources, log_summary=True) -> list[SchemeModel]:
+    """Merge multiple scheme lists, deduplicating by normalized name and source."""
+    merged: list[dict[str, Any]] = []
+    merged_index: dict[tuple[str, str], int] = {}
 
     for source_list in all_sources:
         for scheme in source_list:
-            if not scheme or not scheme.get("name"):
+            scheme_copy = _scheme_to_dict(scheme)
+            if not scheme_copy or not scheme_copy.get("name"):
                 continue
 
-            scheme_copy = dict(scheme)
-            if scheme_copy.get("type") == "private" or scheme_copy.get("provider"):
-                scheme_copy["source_type"] = "private"
-            else:
-                scheme_copy["source_type"] = scheme_copy.get("source_type", "government")
+            scheme_copy["source_type"] = _resolved_source_type(scheme_copy)
+            key = _merge_key(scheme_copy)
+            if not key[0]:
+                continue
 
-            existing_index = None
-            for index, existing in enumerate(merged):
-                if _is_similar_name(existing["name"], scheme_copy["name"]):
-                    existing_index = index
-                    break
+            existing_index = merged_index.get(key)
 
             if existing_index is None:
+                merged_index[key] = len(merged)
                 merged.append(scheme_copy)
                 continue
 
@@ -373,5 +449,11 @@ def merge_schemes(all_sources):
                     if existing.get(key) in ("", None) and value not in ("", None):
                         existing[key] = value
 
-    logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged)} schemes")
-    return merged
+    merged_models = [SchemeModel.from_dict(entry) for entry in merged if entry.get("name")]
+    if log_summary:
+        logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged_models)} schemes")
+    return merged_models
+
+
+def merge_schemes(all_sources) -> list[SchemeModel]:
+    return merge_and_deduplicate(all_sources)

@@ -6,6 +6,8 @@ schemes have {"name": str, "eligibility": str} structure.
 """
 
 import re
+
+from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
 logger = get_logger("eligibility")
@@ -127,7 +129,7 @@ def _check_course(profile, text):
     return any(v in text for v in variants)
 
 
-def find_eligible_schemes(profile, schemes):
+def find_eligible_schemes(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     """Find schemes matching the user profile using scheme-name heuristics."""
     _validate_profile(profile)
 
@@ -158,8 +160,8 @@ def find_eligible_schemes(profile, schemes):
         "pondicherry", "state", "union territory",
     ]
 
-    def _normalize_name(scheme):
-        return str(scheme.get("name", "")).strip()
+    def _normalize_name(scheme: SchemeModel):
+        return str(scheme.name).strip()
 
     def _is_generic_or_all_india(name_text):
         if "all india" in name_text or "national" in name_text:
@@ -224,13 +226,17 @@ def find_eligible_schemes(profile, schemes):
         if merit_match and "merit" not in reasons:
             reasons.append("merit/open")
 
-        results.append({
-            "name": name,
-            "match_score": score,
-            "match_reasons": reasons,
-        })
+        results.append(
+            scheme.model_copy(
+                update={
+                    "match_score": score,
+                    "match_reasons": reasons,
+                },
+                deep=True,
+            )
+        )
 
-    results.sort(key=lambda item: (-item["match_score"], item["name"].lower()))
+    results.sort(key=lambda item: (-item.match_score, item.name.lower()))
 
     logger.info(
         f"[DISCOVERY] Eligibility check: {len(results)} eligible "
