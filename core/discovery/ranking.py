@@ -1,6 +1,7 @@
 """Ranking Engine - TinyFish-based ranking with deterministic fallback."""
 
 import json
+from collections.abc import Callable
 
 from core.integrations.tinyfish_client import discover_tinyfish_run_method, get_tinyfish_client
 from schemas.scheme_model import SchemeModel
@@ -12,6 +13,7 @@ _TOP_N = 5
 _MAX_TINYFISH_INPUT = 20
 _GOVERNMENT_TOP_N = 7
 _PRIVATE_TOP_N = 3
+_DEFAULT_TINYFISH_URL = "https://scholarships.gov.in/"
 
 _CATEGORY_KEYWORDS = {
     "obc": ["obc", "backward", "ebc", "dnt", "other backward"],
@@ -343,6 +345,33 @@ def _build_tinyfish_prompt(profile, scheme_payload):
     )
 
 
+def _resolve_tinyfish_url(schemes: list[SchemeModel]) -> str:
+    for scheme in schemes:
+        candidate = str(scheme.apply_link or "").strip()
+        if candidate:
+            return candidate
+    return _DEFAULT_TINYFISH_URL
+
+
+def _invoke_tinyfish_run_method(run_method: Callable, prompt: str, target_url: str):
+    attempts = [
+        {"url": target_url, "goal": prompt},
+        {"url": target_url, "instructions": prompt},
+        {"goal": prompt},
+        {"instructions": prompt},
+    ]
+    last_error = None
+
+    for kwargs in attempts:
+        try:
+            return run_method(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+            logger.debug(f"[RANKING] TinyFish invocation shape failed for keys {tuple(kwargs.keys())}: {exc}")
+
+    raise last_error or TypeError("No compatible TinyFish run signature found")
+
+
 def _tinyfish_rank(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     """Use TinyFish to rank schemes. Raises on failure."""
     top_candidates = schemes[:_MAX_TINYFISH_INPUT]
@@ -362,13 +391,14 @@ def _tinyfish_rank(profile, schemes: list[SchemeModel]) -> list[SchemeModel]:
     ]
 
     prompt = _build_tinyfish_prompt(profile, scheme_payload)
+    target_url = _resolve_tinyfish_url(top_candidates)
     client = get_tinyfish_client()
     run_method = discover_tinyfish_run_method(client, logger, "[RANKING]")
     if run_method is None:
         return _rule_based_rank_with_profile(profile, schemes)
 
     try:
-        response = run_method(goal=prompt)
+        response = _invoke_tinyfish_run_method(run_method, prompt, target_url)
     except TypeError as e:
         logger.warning(f"[RANKING] TinyFish method invocation failed, using fallback: {e}")
         return _rule_based_rank_with_profile(profile, schemes)
@@ -428,10 +458,10 @@ def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
     box_width = content_width + 2
 
     lines = []
-    lines.append("â•”" + "â•" * box_width + "â•—")
+    lines.append("╔" + "═" * box_width + "╗")
     header = "ELIGIBLE SCHEMES FOR YOUR PROFILE"
-    lines.append("â•‘" + header.center(box_width) + "â•‘")
-    lines.append("â• " + "â•" * box_width + "â•£")
+    lines.append("║" + header.center(box_width) + "║")
+    lines.append("╠" + "═" * box_width + "╣")
 
     for i, scheme in enumerate(ranked_schemes, 1):
         source_type = _source_type(scheme)
@@ -445,14 +475,14 @@ def format_ranked_output(ranked_schemes: list[SchemeModel]) -> str:
         padding = box_width - len(name_line) - len(score_str) - 1
         if padding < 1:
             padding = 1
-        lines.append(f"â•‘{name_line}{' ' * padding}{score_str} â•‘")
+        lines.append(f"║{name_line}{' ' * padding}{score_str} ║")
 
         if reasons:
             reasons_str = f"    Matched: {', '.join(reasons)}"
             pad2 = box_width - len(reasons_str)
             if pad2 < 0:
                 pad2 = 0
-            lines.append(f"â•‘{reasons_str}{' ' * pad2}â•‘")
+            lines.append(f"║{reasons_str}{' ' * pad2}║")
 
-    lines.append("â•š" + "â•" * box_width + "â•")
+    lines.append("╚" + "═" * box_width + "╝")
     return "\n".join(lines)

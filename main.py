@@ -13,9 +13,24 @@ from extractor.field_extractor import extract_fields
 from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
+from utils.tracker import init_tracker, log_application, print_application_history
 from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
 logger = get_logger("main")
 from config import Config
+
+
+def _configure_console_encoding():
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            continue
+
+
+_configure_console_encoding()
 
 TINYFISH_AVAILABLE = bool(os.getenv("TINYFISH_API_KEY"))
 
@@ -90,7 +105,7 @@ def _run_discovery_handoff(
     handle_human_handoff(manual_payload, profile, open_browser=not preview_mode)
 
 
-def run_discovery(handoff_mode="agent"):
+def run_discovery(handoff_mode="agent", use_cache=True):
     """Run scheme discovery mode: scrape → match → rank → display."""
     from core.application_agent import (
         handle_human_handoff,
@@ -99,27 +114,16 @@ def run_discovery(handoff_mode="agent"):
     )
     from core.discovery.eligibility import find_eligible_schemes
     from core.discovery.multi_source import (
+        collect_source_lists,
         merge_schemes,
-        scrape_buddy4study,
-        scrape_international_scholarships,
-        scrape_myscheme,
-        scrape_nsp,
-        scrape_scholarships360,
-        scrape_we_make_scholars,
     )
     from core.discovery.ranking import _rule_based_rank, rank_schemes, format_ranked_output
 
     profile = load_profile(config.PROFILE_PATH)
+    init_tracker()
 
     logger.info("[DISCOVERY] Starting scheme discovery...")
-    source_lists = [
-        scrape_nsp(),
-        scrape_myscheme(),
-        scrape_buddy4study(),
-        scrape_we_make_scholars(),
-        scrape_scholarships360(),
-        scrape_international_scholarships(),
-    ]
+    source_lists = collect_source_lists(profile, use_cache=use_cache)
     schemes = merge_schemes(source_lists)
 
     if not schemes:
@@ -150,8 +154,17 @@ def run_discovery(handoff_mode="agent"):
                 return
             if 1 <= n <= len(ranked):
                 selected = ranked[n - 1]
+                portal_url = selected.apply_link or config.START_URL
+                profile_name = profile.get("full_name") or profile.get("name") or ""
                 print(f"\nSelected: {selected.name}")
                 print("Handing off to application agent...")
+                log_application(
+                    selected.name,
+                    portal_url,
+                    selected.source_type,
+                    "handoff_completed",
+                    profile_name=profile_name,
+                )
                 _run_discovery_handoff(
                     selected,
                     profile,
@@ -237,6 +250,8 @@ if __name__ == "__main__":
                         help="Run scheme discovery mode")
     parser.add_argument("--apply", action="store_true",
                         help="Run application/login mode (default)")
+    parser.add_argument("--history", action="store_true",
+                        help="Print recent application history and exit")
     parser.add_argument(
         "--mode",
         choices=["agent", "hybrid", "local"],
@@ -246,6 +261,11 @@ if __name__ == "__main__":
     parser.add_argument("--no-cache", action="store_true",
                         help="Force fresh scrape (use with --discover)")
     args = parser.parse_args()
+
+    if args.history:
+        init_tracker()
+        print_application_history()
+        sys.exit(0)
 
     # Set global intent mode
     from core.intent_filter import set_mode
@@ -258,7 +278,7 @@ if __name__ == "__main__":
         if args.no_cache:
             from core.discovery import nsp_scraper
             nsp_scraper._FORCE_REFRESH = True
-        run_discovery(handoff_mode=args.mode)
+        run_discovery(handoff_mode=args.mode, use_cache=not args.no_cache)
     else:
         if args.mode != "agent":
             print("[CONFIG] --mode only affects --discover. Running local apply flow.")

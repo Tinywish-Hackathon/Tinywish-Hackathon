@@ -7,6 +7,7 @@ from typing import Any
 from urllib import request
 
 from core.discovery.nsp_scraper import get_nsp_schemes
+from core.discovery.startup_india_scraper import get_startup_india_schemes
 from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
@@ -217,21 +218,37 @@ def scrape_nsp():
     return schemes
 
 
+def _dedupe_source_schemes(schemes):
+    """Deduplicate a single source list without emitting global merge totals."""
+    return merge_and_deduplicate([schemes], log_summary=False)
+
+
+def _scrape_source_with_optional_silence(urls, extract_fn, warning_prefix, silent_fail=False):
+    schemes = []
+
+    try:
+        for url in urls:
+            schemes.extend(extract_fn(url))
+    except Exception as e:
+        if not silent_fail:
+            logger.warning(f"{warning_prefix} {e}")
+        return []
+
+    return _dedupe_source_schemes(schemes)
+
+
 def scrape_myscheme():
     """Scrape scholarship-like scheme names from MyScheme."""
     urls = [
         "https://www.myscheme.gov.in/schemes",
         "https://www.myscheme.gov.in/search",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_schemes_from_html(_fetch_html(url), "MyScheme"))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] MyScheme fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_schemes_from_html(_fetch_html(url), "MyScheme"),
+        "[DISCOVERY] MyScheme fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] MyScheme: {len(schemes)} schemes")
     return schemes
 
@@ -250,7 +267,7 @@ def scrape_buddy4study():
         except Exception as e:
             logger.warning(f"[DISCOVERY] Buddy4Study fetch failed for {url}: {e}")
 
-    schemes = merge_schemes([schemes])
+    schemes = _dedupe_source_schemes(schemes)
     logger.info(f"[DISCOVERY] Buddy4Study: {len(schemes)} schemes")
     return schemes
 
@@ -261,15 +278,12 @@ def scrape_we_make_scholars():
         "https://www.wemakescholars.com/scholarships",
         "https://www.wemakescholars.com/other-scholarships",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "WeMakeScholars", url))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] WeMakeScholars fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_private_schemes_from_html(_fetch_html(url), "WeMakeScholars", url),
+        "[DISCOVERY] WeMakeScholars fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] WeMakeScholars: {len(schemes)} schemes")
     return schemes
 
@@ -280,15 +294,12 @@ def scrape_scholarships360():
         "https://scholarships360.org/scholarships/",
         "https://scholarships360.org/featured-scholarships/",
     ]
-    schemes = []
-
-    for url in urls:
-        try:
-            schemes.extend(_extract_private_schemes_from_html(_fetch_html(url), "Scholarships360", url))
-        except Exception as e:
-            logger.warning(f"[DISCOVERY] Scholarships360 fetch failed for {url}: {e}")
-
-    schemes = merge_schemes([schemes])
+    schemes = _scrape_source_with_optional_silence(
+        urls,
+        lambda url: _extract_private_schemes_from_html(_fetch_html(url), "Scholarships360", url),
+        "[DISCOVERY] Scholarships360 fetch failed:",
+        silent_fail=True,
+    )
     logger.info(f"[DISCOVERY] Scholarships360: {len(schemes)} schemes")
     return schemes
 
@@ -309,9 +320,38 @@ def scrape_international_scholarships():
         except Exception as e:
             logger.warning(f"[DISCOVERY] International Scholarships fetch failed for {url}: {e}")
 
-    schemes = merge_schemes([schemes])
+    schemes = _dedupe_source_schemes(schemes)
     logger.info(f"[DISCOVERY] International Scholarships: {len(schemes)} schemes")
     return schemes
+
+
+def scrape_startup_india(use_cache=True):
+    """Scrape Startup India government schemes for startup-focused profiles."""
+    try:
+        schemes = get_startup_india_schemes(use_cache=use_cache)
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Startup India scrape failed: {e}")
+        schemes = []
+
+    logger.info(f"[DISCOVERY] Startup India: {len(schemes)} schemes")
+    return schemes
+
+
+def collect_source_lists(profile, use_cache=True):
+    """Build the discovery source list, including startup sources when applicable."""
+    source_lists = [
+        scrape_nsp(),
+        scrape_myscheme(),
+        scrape_buddy4study(),
+        scrape_we_make_scholars(),
+        scrape_scholarships360(),
+        scrape_international_scholarships(),
+    ]
+
+    if isinstance(profile, dict) and profile.get("startup"):
+        source_lists.append(scrape_startup_india(use_cache=use_cache))
+
+    return source_lists
 
 
 def _detail_score(entry):
@@ -348,7 +388,7 @@ def _scheme_to_dict(scheme: SchemeModel | dict[str, Any]) -> dict[str, Any]:
     return dict(scheme or {})
 
 
-def merge_and_deduplicate(all_sources) -> list[SchemeModel]:
+def merge_and_deduplicate(all_sources, log_summary=True) -> list[SchemeModel]:
     """Merge multiple scheme lists, deduplicating by name similarity."""
     merged = []
 
@@ -382,7 +422,8 @@ def merge_and_deduplicate(all_sources) -> list[SchemeModel]:
                         existing[key] = value
 
     merged_models = [SchemeModel.from_dict(entry) for entry in merged if entry.get("name")]
-    logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged_models)} schemes")
+    if log_summary:
+        logger.info(f"[DISCOVERY] TOTAL after merge: {len(merged_models)} schemes")
     return merged_models
 
 
