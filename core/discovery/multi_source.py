@@ -7,6 +7,7 @@ from typing import Any
 from urllib import request
 
 from core.discovery.nsp_scraper import get_nsp_schemes
+from core.discovery.startup_india_scraper import get_startup_india_schemes
 from schemas.scheme_model import SchemeModel
 from utils.logger import get_logger
 
@@ -312,6 +313,35 @@ def scrape_international_scholarships():
     schemes = merge_schemes([schemes])
     logger.info(f"[DISCOVERY] International Scholarships: {len(schemes)} schemes")
     return schemes
+
+
+def scrape_startup_india(use_cache=True):
+    """Scrape Startup India government schemes for startup-focused profiles."""
+    try:
+        schemes = get_startup_india_schemes(use_cache=use_cache)
+    except Exception as e:
+        logger.warning(f"[DISCOVERY] Startup India scrape failed: {e}")
+        schemes = []
+
+    logger.info(f"[DISCOVERY] Startup India: {len(schemes)} schemes")
+    return schemes
+
+
+def collect_source_lists(profile, use_cache=True):
+    """Build the discovery source list, including startup sources when applicable."""
+    source_lists = [
+        scrape_nsp(),
+        scrape_myscheme(),
+        scrape_buddy4study(),
+        scrape_we_make_scholars(),
+        scrape_scholarships360(),
+        scrape_international_scholarships(),
+    ]
+
+    if isinstance(profile, dict) and profile.get("startup"):
+        source_lists.append(scrape_startup_india(use_cache=use_cache))
+
+    return source_lists
 
 
 def _detail_score(entry):
