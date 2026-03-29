@@ -1,22 +1,20 @@
 import sys
 import argparse
 import os
+from importlib.util import find_spec
+
 import config
-from executor.browser import start_browser, wait_for_user_input, fill_field
-from executor.actions import (
-    get_visible, scroll_to_find, safe_click,
-    find_by_text_fuzzy, safe_click_fuzzy, safe_click_in_section
-)
-from executor.flow_engine import run_flow
-from extractor.dom import detect_iframes, log_page_elements
-from extractor.field_extractor import extract_fields
-from mapper.form_mapper import map_field
 from utils.logger import get_logger
 from utils.helpers import load_profile
 from utils.tracker import init_tracker, log_application, print_application_history
-from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT
+from sites.nsp import FLOW as NSP_FLOW, INTENT as NSP_INTENT, URL as NSP_URL
+from sites.startup_india import (
+    FLOW as STARTUP_INDIA_FLOW,
+    INTENT as STARTUP_INDIA_INTENT,
+    URL as STARTUP_INDIA_URL,
+)
+
 logger = get_logger("main")
-from config import Config
 
 
 def _configure_console_encoding():
@@ -32,11 +30,69 @@ def _configure_console_encoding():
 
 _configure_console_encoding()
 
-TINYFISH_AVAILABLE = bool(os.getenv("TINYFISH_API_KEY"))
+_DEPENDENCY_MODULES = {
+    "requests": "requests",
+    "beautifulsoup4": "bs4",
+    "tinyfish": "tinyfish",
+    "playwright": "playwright",
+}
+_REPORTED_MISSING_DEPENDENCIES = set()
+_SITE_CONFIGS = {
+    "nsp": {
+        "label": "NSP",
+        "url": NSP_URL,
+        "flow": NSP_FLOW,
+        "intent": NSP_INTENT,
+    },
+    "startup_india": {
+        "label": "Startup India",
+        "url": STARTUP_INDIA_URL,
+        "flow": STARTUP_INDIA_FLOW,
+        "intent": STARTUP_INDIA_INTENT,
+    },
+}
+
+
+def _has_dependency(dependency_name):
+    module_name = _DEPENDENCY_MODULES[dependency_name]
+    loaded_module = sys.modules.get(module_name)
+    if loaded_module is not None:
+        return True
+    return find_spec(module_name) is not None
+
+
+def check_dependencies(require_tinyfish=False, require_browser=False, require_scrapers=False):
+    required = set()
+    if require_scrapers:
+        required.update({"requests", "beautifulsoup4"})
+    if require_tinyfish:
+        required.add("tinyfish")
+    if require_browser:
+        required.add("playwright")
+
+    missing = sorted(name for name in required if not _has_dependency(name))
+    if missing:
+        key = tuple(missing)
+        if key not in _REPORTED_MISSING_DEPENDENCIES:
+            print(f"Missing dependencies: {', '.join(missing)}. Install via pip install -r requirements.txt")
+            logger.warning(f"[CONFIG] Missing dependencies: {', '.join(missing)}")
+            _REPORTED_MISSING_DEPENDENCIES.add(key)
+    return missing
+
+
+TINYFISH_API_KEY_PRESENT = bool(os.getenv("TINYFISH_API_KEY"))
+TINYFISH_SDK_AVAILABLE = _has_dependency("tinyfish")
+TINYFISH_AVAILABLE = TINYFISH_API_KEY_PRESENT and TINYFISH_SDK_AVAILABLE
 
 if not TINYFISH_AVAILABLE:
+    reasons = []
+    if not TINYFISH_API_KEY_PRESENT:
+        reasons.append("TINYFISH_API_KEY not set")
+    if not TINYFISH_SDK_AVAILABLE:
+        reasons.append("tinyfish package not installed")
     logger.warning(
-        "[CONFIG] TINYFISH_API_KEY not set. TinyFish ranking and application intelligence "
+        f"[CONFIG] TinyFish unavailable ({', '.join(reasons)}). "
+        "TinyFish ranking and application intelligence "
         "will be unavailable. Running in offline mode."
     )
 else:
@@ -48,8 +104,35 @@ def wait(msg):
     input(f"\n[MANUAL STEP] {msg} → Press Enter...")
 
 
+def _site_key_for_scheme(selected):
+    source = str(getattr(selected, "source", "") or "").strip().lower()
+    apply_link = str(getattr(selected, "apply_link", "") or "").strip().lower()
+
+    if "startup india" in source or "startupindia.gov.in" in apply_link:
+        return "startup_india"
+    if source in {"nsp", "national scholarship portal"} or "scholarships.gov.in" in apply_link:
+        return "nsp"
+    return ""
+
+
+def _site_config_for_scheme(selected):
+    return _SITE_CONFIGS.get(_site_key_for_scheme(selected))
+
+
+def _resolve_portal_url(selected):
+    apply_link = str(getattr(selected, "apply_link", "") or "").strip()
+    if apply_link:
+        return apply_link
+
+    site_config = _site_config_for_scheme(selected)
+    if site_config:
+        return site_config["url"]
+
+    return ""
+
+
 def _build_manual_handoff_payload(selected):
-    apply_link = selected.apply_link or config.START_URL
+    apply_link = _resolve_portal_url(selected)
     return {
         "apply_link": apply_link,
         "fields": [],
@@ -63,6 +146,89 @@ def _build_manual_handoff_payload(selected):
     }
 
 
+def run_local_apply_flow(site_url=None, site_flow=None, site_intent="apply"):
+    site_url = str(site_url or config.START_URL).strip()
+    site_flow = site_flow or NSP_FLOW
+
+    if check_dependencies(require_browser=True):
+        return False
+
+    try:
+        from executor.browser import fill_field, start_browser
+        from executor.flow_engine import run_flow
+        from extractor.dom import log_page_elements
+        from extractor.field_extractor import extract_fields
+        from mapper.form_mapper import map_field
+    except Exception as e:
+        logger.error(f"[CONFIG] Browser automation dependencies unavailable: {e}")
+        return False
+
+    p, browser, context, page = start_browser()
+
+    try:
+        logger.info(f"[AGENT] Opening portal: {site_url}")
+        page.goto(site_url)
+        page.wait_for_load_state("domcontentloaded")
+        logger.info(f"Page loaded — URL: {page.url}")
+
+        results = run_flow(page, site_flow, flow_intent=site_intent)
+        logger.info(
+            f"Navigation flow: {results['completed']}/{results['total']} steps completed, "
+            f"{results.get('skipped', 0)} skipped"
+        )
+
+        if results["failed"] > 0:
+            wait(f"{results['failed']} step(s) failed — verify page state manually")
+
+        page.wait_for_timeout(3000)
+        logger.info(f"Now at: {page.url}")
+
+        try:
+            page.wait_for_selector("input", timeout=15000)
+            logger.info("Form detected")
+            log_page_elements(page)
+        except Exception:
+            wait("Ensure form is visible")
+
+        logger.info("Extracting form fields...")
+        profile = load_profile(config.PROFILE_PATH)
+        fields = extract_fields(page)
+
+        filled_count = 0
+        for field_info in fields:
+            key, value = map_field(field_info, profile)
+            if key and value:
+                fill_field(page, field_info, value)
+                filled_count += 1
+
+        logger.info(f"Filled {filled_count} / {len(fields)} fields from profile")
+        wait("Check fields and submit manually")
+        logger.info("Local portal flow complete.")
+        return True
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return False
+    finally:
+        input("\nPress Enter to close browser...")
+        browser.close()
+        p.stop()
+        logger.info("Browser closed. Done.")
+
+
+def _run_local_portal_flow(selected):
+    site_config = _site_config_for_scheme(selected)
+    if not site_config:
+        return False
+
+    portal_url = _resolve_portal_url(selected) or site_config["url"]
+    print(f"Launching local {site_config['label']} flow...")
+    return run_local_apply_flow(
+        site_url=portal_url,
+        site_flow=site_config["flow"],
+        site_intent=site_config["intent"],
+    )
+
+
 def _run_discovery_handoff(
     selected,
     profile,
@@ -70,18 +236,25 @@ def _run_discovery_handoff(
     handle_human_handoff,
     open_local_preview,
     run_tinyfish_application_agent,
+    run_local_portal_flow=None,
 ):
-    apply_link = selected.apply_link or config.START_URL
+    apply_link = _resolve_portal_url(selected)
     manual_payload = _build_manual_handoff_payload(selected)
-    preview_mode = handoff_mode in {"local", "hybrid"}
-
-    if preview_mode:
-        print("Opening local preview...")
-        open_local_preview(apply_link)
 
     if handoff_mode == "local":
+        if run_local_portal_flow and _site_config_for_scheme(selected) and run_local_portal_flow(selected):
+            return
+        if apply_link:
+            print("Opening local preview...")
+            open_local_preview(apply_link)
         handle_human_handoff(manual_payload, profile, open_browser=False)
         return
+
+    preview_mode = handoff_mode == "hybrid"
+
+    if preview_mode and apply_link:
+        print("Opening local preview...")
+        open_local_preview(apply_link)
 
     if TINYFISH_AVAILABLE:
         try:
@@ -92,7 +265,7 @@ def _run_discovery_handoff(
                 open_browser=not preview_mode,
             )
         except Exception as e:
-            logger.error(f"[APPLICATION] TinyFish application agent failed: {e}")
+            logger.error(f"[AGENT] TinyFish application agent failed: {e}")
             print("Application agent failed. Check logs for details.")
             if preview_mode:
                 handle_human_handoff(manual_payload, profile, open_browser=False)
@@ -107,6 +280,10 @@ def _run_discovery_handoff(
 
 def run_discovery(handoff_mode="agent", use_cache=True):
     """Run scheme discovery mode: scrape → match → rank → display."""
+    check_dependencies(
+        require_tinyfish=handoff_mode in {"agent", "hybrid"},
+        require_scrapers=True,
+    )
     from core.application_agent import (
         handle_human_handoff,
         open_local_preview,
@@ -154,7 +331,7 @@ def run_discovery(handoff_mode="agent", use_cache=True):
                 return
             if 1 <= n <= len(ranked):
                 selected = ranked[n - 1]
-                portal_url = selected.apply_link or config.START_URL
+                portal_url = _resolve_portal_url(selected)
                 profile_name = profile.get("full_name") or profile.get("name") or ""
                 print(f"\nSelected: {selected.name}")
                 print("Handing off to application agent...")
@@ -172,76 +349,24 @@ def run_discovery(handoff_mode="agent", use_cache=True):
                     handle_human_handoff,
                     open_local_preview,
                     run_tinyfish_application_agent,
+                    _run_local_portal_flow,
                 )
                 return
             else:
                 print(f"Please enter a number between 1 and {len(ranked)}")
         except ValueError:
             print("Invalid input. Please enter a number.")
+        except EOFError:
+            print("\nInput closed.")
+            return
         except KeyboardInterrupt:
             print("\nCancelled.")
             return
 
 
 def main():
-    # --- Launch browser using executor module ---
-    p, browser, context, page = start_browser()
-
-    try:
-        logger.info("Opening NSP...")
-        page.goto(config.START_URL)
-        page.wait_for_load_state("domcontentloaded")
-        logger.info(f"Page loaded — URL: {page.url}")
-
-        # --- Run the site-specific navigation flow ---
-        results = run_flow(page, NSP_FLOW, flow_intent=NSP_INTENT)
-        logger.info(f"Navigation flow: {results['completed']}/{results['total']} steps completed, {results.get('skipped', 0)} skipped")
-
-        # If any navigation steps failed, offer manual fallback
-        if results["failed"] > 0:
-            wait(f"{results['failed']} step(s) failed — verify page state manually")
-
-        page.wait_for_timeout(3000)
-        logger.info(f"Now at: {page.url}")
-
-        # -----------------------------
-        # WAIT FOR FORM
-        # -----------------------------
-        try:
-            page.wait_for_selector("input", timeout=15000)
-            logger.info("Form detected")
-            log_page_elements(page)
-        except Exception:
-            wait("Ensure form is visible")
-
-        # -----------------------------
-        # STEP 6: FORM FILL (MODULAR)
-        # -----------------------------
-        logger.info("Extracting form fields...")
-        profile = load_profile(config.PROFILE_PATH)
-
-        fields = extract_fields(page)
-
-        filled_count = 0
-        for field_info in fields:
-            key, value = map_field(field_info, profile)
-            if key and value:
-                fill_field(page, field_info, value)
-                filled_count += 1
-
-        logger.info(f"Filled {filled_count} / {len(fields)} fields from profile")
-
-        wait("Check fields and submit manually")
-
-        logger.info("Phase 1 flow complete.")
-
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-    finally:
-        input("\nPress Enter to close browser...")
-        browser.close()
-        p.stop()
-        logger.info("Browser closed. Done.")
+    check_dependencies(require_browser=True)
+    run_local_apply_flow()
 
 
 if __name__ == "__main__":

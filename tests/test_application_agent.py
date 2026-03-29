@@ -1,6 +1,8 @@
 import sys
 import types
 import unittest
+import os
+import subprocess
 from unittest.mock import patch
 
 tinyfish_stub = types.ModuleType("tinyfish")
@@ -13,6 +15,7 @@ from core.application_agent import (
     _resolve_application_url,
     handle_human_handoff,
     open_local_preview,
+    run_tinyfish_application_agent,
 )
 
 
@@ -51,12 +54,12 @@ class ApplicationUrlSelectionTests(unittest.TestCase):
         self.assertIn("Start URL: https://wis.ntu.edu.sg/apply", goal)
         self.assertIn("Navigate to https://wis.ntu.edu.sg/apply", goal)
 
-    def test_falls_back_to_nsp_when_apply_link_missing(self):
+    def test_falls_back_to_neutral_url_when_apply_link_missing(self):
         url = _resolve_application_url("")
         goal = _build_goal("NSP Scheme", base_url=url)
 
-        self.assertEqual(url, "https://scholarships.gov.in/")
-        self.assertIn("Start URL: https://scholarships.gov.in/", goal)
+        self.assertEqual(url, "https://example.com/")
+        self.assertIn("Start URL: https://example.com/", goal)
 
 
 class BrowserLaunchTests(unittest.TestCase):
@@ -64,8 +67,8 @@ class BrowserLaunchTests(unittest.TestCase):
     def test_open_local_preview_uses_resolved_url(self, mock_open):
         result = open_local_preview("")
 
-        self.assertEqual(result, "https://scholarships.gov.in/")
-        mock_open.assert_called_once_with("https://scholarships.gov.in/")
+        self.assertEqual(result, "https://example.com/")
+        mock_open.assert_called_once_with("https://example.com/")
 
     @patch("builtins.print")
     @patch("webbrowser.open")
@@ -83,6 +86,43 @@ class BrowserLaunchTests(unittest.TestCase):
         )
 
         mock_open.assert_not_called()
+
+
+class AgentFallbackTests(unittest.TestCase):
+    def test_run_tinyfish_application_agent_returns_contract_without_api_key(self):
+        with patch.dict(os.environ, {}, clear=True), patch("builtins.print"), patch("webbrowser.open"):
+            result = run_tinyfish_application_agent(
+                "National Scholarship",
+                profile={},
+                api_key=None,
+                apply_link="https://example.com/apply",
+                open_browser=False,
+            )
+
+        self.assertEqual(result["apply_link"], "https://example.com/apply")
+        self.assertEqual(result["fields"], [])
+        self.assertEqual(result["documents"], [])
+        self.assertIsInstance(result["steps"], list)
+        self.assertFalse(result["form_detected"])
+
+    def test_application_agent_imports_without_tinyfish_sdk_installed(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        command = [
+            sys.executable,
+            "-c",
+            "import core.application_agent; print('ok')",
+        ]
+
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("ok", completed.stdout)
 
 
 if __name__ == "__main__":

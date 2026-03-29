@@ -337,19 +337,27 @@ def scrape_startup_india(use_cache=True):
     return schemes
 
 
+def _safe_source_result(scrape_fn, *args, **kwargs):
+    try:
+        result = scrape_fn(*args, **kwargs)
+    except Exception:
+        return []
+    return result or []
+
+
 def collect_source_lists(profile, use_cache=True):
     """Build the discovery source list, including startup sources when applicable."""
     source_lists = [
-        scrape_nsp(),
-        scrape_myscheme(),
-        scrape_buddy4study(),
-        scrape_we_make_scholars(),
-        scrape_scholarships360(),
-        scrape_international_scholarships(),
+        _safe_source_result(scrape_nsp),
+        _safe_source_result(scrape_myscheme),
+        _safe_source_result(scrape_buddy4study),
+        _safe_source_result(scrape_we_make_scholars),
+        _safe_source_result(scrape_scholarships360),
+        _safe_source_result(scrape_international_scholarships),
     ]
 
     if isinstance(profile, dict) and profile.get("startup"):
-        source_lists.append(scrape_startup_india(use_cache=use_cache))
+        source_lists.append(_safe_source_result(scrape_startup_india, use_cache=use_cache))
 
     return source_lists
 
@@ -383,14 +391,37 @@ def _is_similar_name(left, right, threshold=0.85):
 
 
 def _scheme_to_dict(scheme: SchemeModel | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(scheme, SchemeModel):
-        return scheme.model_dump()
-    return dict(scheme or {})
+    return SchemeModel.from_dict(scheme).model_dump()
+
+
+def _normalized_source_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalized_name_key(value: Any) -> str:
+    return _clean_text(value).lower()
+
+
+def _merge_key(entry: dict[str, Any]) -> tuple[str, str]:
+    return (
+        _normalized_name_key(entry.get("name")),
+        _normalized_source_key(entry.get("source")),
+    )
+
+
+def _resolved_source_type(entry: dict[str, Any]) -> str:
+    explicit = str(entry.get("source_type") or "").strip().lower()
+    if explicit in {"government", "private"}:
+        return explicit
+    if str(entry.get("type") or "").strip().lower() == "private":
+        return "private"
+    return "government"
 
 
 def merge_and_deduplicate(all_sources, log_summary=True) -> list[SchemeModel]:
-    """Merge multiple scheme lists, deduplicating by name similarity."""
-    merged = []
+    """Merge multiple scheme lists, deduplicating by normalized name and source."""
+    merged: list[dict[str, Any]] = []
+    merged_index: dict[tuple[str, str], int] = {}
 
     for source_list in all_sources:
         for scheme in source_list:
@@ -398,18 +429,15 @@ def merge_and_deduplicate(all_sources, log_summary=True) -> list[SchemeModel]:
             if not scheme_copy or not scheme_copy.get("name"):
                 continue
 
-            if scheme_copy.get("type") == "private" or scheme_copy.get("provider"):
-                scheme_copy["source_type"] = "private"
-            else:
-                scheme_copy["source_type"] = scheme_copy.get("source_type", "government")
+            scheme_copy["source_type"] = _resolved_source_type(scheme_copy)
+            key = _merge_key(scheme_copy)
+            if not key[0]:
+                continue
 
-            existing_index = None
-            for index, existing in enumerate(merged):
-                if _is_similar_name(existing["name"], scheme_copy["name"]):
-                    existing_index = index
-                    break
+            existing_index = merged_index.get(key)
 
             if existing_index is None:
+                merged_index[key] = len(merged)
                 merged.append(scheme_copy)
                 continue
 

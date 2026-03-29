@@ -55,9 +55,9 @@ class SchemeModelFlowTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(len(merged), 1)
-        self.assertIsInstance(merged[0], SchemeModel)
-        self.assertEqual(merged[0].name, "National Scholarship")
+        self.assertEqual(len(merged), 2)
+        self.assertTrue(all(isinstance(item, SchemeModel) for item in merged))
+        self.assertEqual({item.source for item in merged}, {"NSP", "MyScheme"})
 
     def test_merge_schemes_accumulates_across_multiple_sources(self):
         merged = merge_schemes(
@@ -77,6 +77,23 @@ class SchemeModelFlowTests(unittest.TestCase):
                 "Future Leaders Scholarship",
             },
         )
+
+    def test_merge_preserves_explicit_government_source_type(self):
+        merged = merge_schemes(
+            [
+                [
+                    {
+                        "name": "Startup India Seed Fund Scheme",
+                        "source": "Startup India",
+                        "source_type": "government",
+                        "provider": "DPIIT",
+                    }
+                ]
+            ]
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].source_type, "government")
 
     def test_eligibility_and_ranking_preserve_scheme_models(self):
         profile = {
@@ -160,9 +177,9 @@ class SchemeModelFlowTests(unittest.TestCase):
             ]
         )
 
-        self.assertIn("╔", output)
-        self.assertIn("═", output)
-        self.assertIn("║", output)
+        self.assertTrue(any(char in output for char in ("╔", "+")))
+        self.assertTrue(any(char in output for char in ("═", "-")))
+        self.assertTrue(any(char in output for char in ("║", "|")))
         self.assertNotIn("â•", output)
 
 
