@@ -77,16 +77,35 @@ def _extract_income_limit(text):
       "2,50,000"     → 250000
       "250000"       → 250000
       "rs. 2.5 lakh" → 250000
+      "2.5L"         → 250000
+      "250k"         → 250000
+      "3,00,000 pa"  → 300000
 
     Returns:
         float or None if no income limit found.
     """
-    # Pattern 1: X lakh / X lakhs
-    lakh_match = re.search(r'(\d+\.?\d*)\s*lakh', text)
+    # Pattern 1: X lakh / X lakhs / XL — require digit before 'L' to avoid
+    # false positives from words like "MODEL" or "CLASS"
+    lakh_match = re.search(r'(\d+\.?\d*)\s*(?:lakh|lakhs)\b|(\d+\.?\d*)L\b', text, re.IGNORECASE)
     if lakh_match:
-        return float(lakh_match.group(1)) * 100000
+        raw = lakh_match.group(1) or lakh_match.group(2)
+        return float(raw) * 100000
 
-    # Pattern 2: Indian-style comma-separated numbers near income context
+    # Pattern 2: X thousand / Xk — only match 'k' in an income context to
+    # avoid false positives like "50k students" or "20k views"
+    k_match = re.search(
+        r'(?:rs\.?|₹|income|earning|annual|salary|limit)[\s.:]*([\d+\.?\d*,]+)\s*(?:k|thousand)\b'
+        r'|(\d+\.?\d*)\s*thousand\b',
+        text,
+        re.IGNORECASE,
+    )
+    if k_match:
+        raw = (k_match.group(1) or k_match.group(2) or "").replace(",", "")
+        try:
+            return float(raw) * 1000
+        except ValueError:
+            pass
+    # Pattern 3: Indian-style comma-separated numbers near income context
     # Look for numbers near "rs" or "income" or "₹"
     income_context = re.search(
         r'(?:rs\.?|₹|income|earning|annual)[\s.:]*'
@@ -100,7 +119,7 @@ def _extract_income_limit(text):
         except ValueError:
             pass
 
-    # Pattern 3: Any large number (>= 10000) as fallback
+    # Pattern 4: Any large number (>= 10000) as fallback
     large_nums = re.findall(r'([\d,]{5,})', text)
     for num_str in large_nums:
         try:

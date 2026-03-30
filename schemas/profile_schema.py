@@ -41,8 +41,8 @@ class UserProfile(BaseModel):
     @field_validator("full_name")
     @classmethod
     def validate_name(cls, v):
-        if len(v.strip()) < 2:
-            raise ValueError("Full name must be at least 2 characters")
+        if len(v.strip()) < 3:
+            raise ValueError("Full name must be at least 3 characters")
         return v.strip()
 
     @field_validator("annual_income")

@@ -1,6 +1,6 @@
 import logging
 
-def get_logger(name="tinywish"):
+def get_logger(name="fundpilot"):
     """Returns a configured logger with console output and timestamp format."""
     logger = logging.getLogger(name)
 
