@@ -185,9 +185,6 @@ def choose_execution_strategy(scheme, demo_mode=False):
     if status in {"closed", "expired"} or is_expired or "closed" in signal_text or "expired" in signal_text:
         return "skip", "Scheme is marked closed or expired."
 
-    if not has_apply_link and not any(kw in signal_text for kw in _APPLY_KEYWORDS):
-        return "skip", "No apply link and no application form signal detected."
-
     # --- Article page detection ---
     if has_apply_link and any(pattern in apply_link_lower for pattern in _ARTICLE_URL_PATTERNS):
         return "extract_only", "Apply link points to an article/listing page, not a direct form."

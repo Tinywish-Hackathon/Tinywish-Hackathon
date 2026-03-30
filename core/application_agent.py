@@ -504,10 +504,23 @@ def handle_human_handoff(result, profile, open_browser=True):
 def _build_goal(scheme_name, profile=None, base_url=None, execution_strategy="full_apply"):
     profile = profile or {}
     target_url = _resolve_application_url(base_url)
-    name = profile.get("full_name") or profile.get("name") or "Atharv"
-    state = profile.get("state") or "J&K"
-    category = profile.get("category") or "OBC"
-    income = profile.get("annual_income") or profile.get("income") or 250000
+    name = profile.get("full_name") or profile.get("name")
+    state = profile.get("state")
+    category = profile.get("category")
+    income = profile.get("annual_income") or profile.get("income")
+
+    if not name:
+        logger.warning("[GOAL] Profile is missing 'full_name'; applicant context will be incomplete.")
+        name = "Applicant"
+    if not state:
+        logger.warning("[GOAL] Profile is missing 'state'; eligibility context will be incomplete.")
+        state = "Unknown"
+    if not category:
+        logger.warning("[GOAL] Profile is missing 'category'; eligibility context will be incomplete.")
+        category = "General"
+    if not income:
+        logger.warning("[GOAL] Profile is missing 'annual_income'; income filter context will be skipped.")
+        income = 0
 
     if execution_strategy == "extract_only":
         strategy_block = (

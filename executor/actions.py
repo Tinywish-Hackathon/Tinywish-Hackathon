@@ -15,6 +15,18 @@ CLICKABLE_ATTRS = ["onclick", "href", "ng-click", "data-action"]
 _clicked_elements = set()
 
 
+def _escape_css_string(value: str) -> str:
+    """Escape a string for safe use inside a single-quoted CSS selector attribute value.
+
+    Escapes backslashes first, then single-quotes, so that text containing
+    either character does not break the surrounding CSS attribute selector
+    syntax, e.g.::
+
+        [aria-label*='O\\'Reilly' i]
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _is_clickable(el):
     """Check if an element is a genuinely clickable interactive element."""
     try:
@@ -175,7 +187,7 @@ def find_by_text_fuzzy(page, candidates, exact=False, clickable_only=False):
 
         # Strategy 3: aria-label contains candidate
         try:
-            aria_loc = page.locator(f"[aria-label*='{search}' i]")
+            aria_loc = page.locator(f"[aria-label*='{_escape_css_string(search)}' i]")
             if aria_loc.count() > 0:
                 el = getter(aria_loc)
                 if el:
@@ -337,7 +349,7 @@ def find_section_by_text(page, candidates):
 
         for tag in container_tags:
             try:
-                selector = f"{tag}:has(text='{search}')"
+                selector = f"{tag}:has(text='{_escape_css_string(search)}')"
                 loc = page.locator(selector)
                 count = loc.count()
 
@@ -388,7 +400,7 @@ def find_within_section(section, candidates):
         # Strategy 1: Links and buttons (highest priority)
         for role_sel in ["a", "button", "[role='button']", "[role='link']"]:
             try:
-                loc = section.locator(f"{role_sel}:has-text('{search}')")
+                loc = section.locator(f"{role_sel}:has-text('{_escape_css_string(search)}')")
                 if loc.count() > 0:
                     el = get_visible(loc)
                     if el:
